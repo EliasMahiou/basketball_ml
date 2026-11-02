@@ -79,6 +79,7 @@ To project a player, look at the players who looked most like him at the same ag
 1. **Comparables**: the 50 player-seasons closest to the target season (same z-score profile as the twins module), among players of the **same age** whose later season is already known. Only seasons that ended before the target season can be used, so nothing leaks from the future.
 2. **What happened next**: for each comparable, the raw change of each stat between that season and the one `h` years later (for example +1.2 BPM).
 3. **Projection**: the target's current value plus the similarity-weighted average of those changes, for 1 to `h` seasons ahead.
+4. **80% range**: the 10th and 90th weighted percentiles of the same changes, which show how differently players like him turned out.
 
 ### Usage
 
@@ -99,20 +100,27 @@ OBPM                 3.600                4.057                4.490            
 DBPM                 2.900                2.864                3.033                3.266
 TS%                  0.594                0.601                0.608                0.615
 USG%                30.400               31.144               31.983               31.598
+
+BPM 80% range (10th to 90th percentile of the comparables' outcomes):
+  2025-26: +4.6 to +9.0
+  2026-27: +5.0 to +9.9
+  2027-28: +5.7 to +9.9
 ```
 
 ### Backtest
 
 Each of the 3,958 player-seasons from 2010-11 to 2024-25 was projected one season ahead and compared with what actually happened. The comparables beat both baselines on all 13 stats. The baselines are "no change", which repeats the current season, and the "age curve", which adds the average change for that age.
 
-| Mean absolute error | Comparables | Age curve | No change |
-| --- | --- | --- | --- |
-| BPM | **1.37** | 1.43 | 1.47 |
-| OBPM | **1.16** | 1.21 | 1.25 |
-| DBPM | **0.64** | 0.66 | 0.66 |
-| TS% | **0.0315** | 0.0335 | 0.0337 |
-| USG% | **2.10** | 2.14 | 2.19 |
-| AST% | **2.91** | 2.94 | 2.97 |
+| Mean absolute error | Comparables | Age curve | No change | Actual inside the 80% range |
+| --- | --- | --- | --- | --- |
+| BPM | **1.37** | 1.43 | 1.47 | 77% |
+| OBPM | **1.16** | 1.21 | 1.25 | 79% |
+| DBPM | **0.64** | 0.66 | 0.66 | 78% |
+| TS% | **0.0315** | 0.0335 | 0.0337 | 76% |
+| USG% | **2.10** | 2.14 | 2.19 | 76% |
+| AST% | **2.91** | 2.94 | 2.97 | 74% |
+
+The ranges are slightly too narrow (77% instead of 80% for BPM), and the 3-point attempt rate is the worst at 70%, because its league-wide rise is not in older comparables.
 
 Limits: only players who stayed in the league with 500+ minutes have an outcome, so comparables are biased toward careers that continued. League-wide trends (like the rise of the 3-point shot) are only partly captured, because comparables come from earlier seasons.
 
@@ -141,7 +149,7 @@ pytest
 
 ## Roadmap
 
-- **Better projections**: regress toward the mean, add minutes and availability, and give an uncertainty range from the spread of the comparables.
+- **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Style embeddings** learned from play-by-play data, as in [NBA2Vec](https://arxiv.org/abs/2302.13386), to replace aggregated stats.
 - **Game predictions** from recent form, rest, injuries and Elo-style ratings.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

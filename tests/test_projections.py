@@ -50,8 +50,24 @@ def test_backtest_scores_all_methods():
     results = backtest(pairs, range(2006, 2010), k=5)
     assert len(results) > 0
     table = score(results)
-    assert set(table.columns) == {"comparables", "age_curve", "no_change"}
+    assert set(table.columns) == {"comparables", "age_curve", "no_change", "range_80_coverage"}
     assert set(table.index) == set(TARGETS)
     # Every comparable improved by exactly +1 BPM, so the projection is exact.
     assert table.loc["bpm", "comparables"] < 1e-9
     assert np.isclose(table.loc["bpm", "no_change"], 1.0)
+
+
+def test_weighted_quantile():
+    from basketball_ml.projections import weighted_quantile
+    v = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    assert np.isclose(weighted_quantile(v, np.ones(5), 0.5), 2.0)
+    # Nearly all the weight on 4 pulls the median there.
+    assert weighted_quantile(v, np.array([1, 1, 1, 1, 100.0]), 0.5) > 3.9
+
+
+def test_backtest_reports_range_coverage():
+    seasons = _fake_league()
+    pairs = build_pairs(seasons, standardize_by_season(seasons))
+    table = score(backtest(pairs, range(2006, 2010), k=5))
+    assert "range_80_coverage" in table.columns
+    assert table.loc["bpm", "range_80_coverage"] == 1.0

@@ -9,7 +9,7 @@ import pandas as pd
 from ..data import FEATURES, load_advanced
 from ..twins.similarity import resolve_player, standardize_by_season
 from .backtest import backtest, score
-from .comparables import TARGETS, build_pairs, project_season
+from .comparables import build_pairs, project_season, projection_range
 
 SHOWN = ["bpm", "obpm", "dbpm", "ts_percent", "usg_percent", "ast_percent", "x3p_ar"]
 LABELS = {**FEATURES, "bpm": "BPM"}
@@ -56,17 +56,23 @@ def run_project(args: argparse.Namespace) -> None:
 
     table = {f"{season - 1}-{str(season)[-2:]} (actual)": target_raw[SHOWN]}
     comps_first = None
+    ranges = {}
     for h in range(1, args.years + 1):
         pairs = build_pairs(seasons, z, horizon=h)
         proj, comps = project_season(target_z, target_raw, pairs, horizon=h, k=args.k)
+        rng = projection_range(comps, target_raw)
         s = season + h
         table[f"{s - 1}-{str(s)[-2:]} (projected)"] = proj[SHOWN]
+        ranges[f"{s - 1}-{str(s)[-2:]}"] = rng.loc["bpm"]
         if comps_first is None:
             comps_first = comps
 
     out = pd.DataFrame(table).rename(index=LABELS).astype(float).round(3)
     print(f"{target_z['player']}, age {int(target_z['age'])} in {season - 1}-{str(season)[-2:]}\n")
     print(out.to_string())
+    print("\nBPM 80% range (10th to 90th percentile of the comparables' outcomes):")
+    for label, r in ranges.items():
+        print(f"  {label}: {r['low']:+.1f} to {r['high']:+.1f}")
     print("\nClosest comparables (season at the same age -> BPM change the next season):")
     top = comps_first.head(5)
     for _, c in top.iterrows():

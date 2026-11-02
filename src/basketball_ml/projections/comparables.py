@@ -7,7 +7,8 @@ How it works:
 2. For each twin, measure how each stat changed between that season and the
    season ``h`` years later (raw units, e.g. +1.2 BPM).
 3. The projection is the target's current value plus the similarity-weighted
-   average of those changes.
+   average of those changes. The 10th-90th weighted percentiles of the same
+   changes give an 80% range.
 
 Only seasons that ended before the target season can serve as comparables,
 so backtests do not peek into the future.
@@ -89,3 +90,31 @@ def project_season(
 def age_curve(pairs: pd.DataFrame, targets: Sequence[str] = TARGETS) -> pd.DataFrame:
     """Average change of each stat by age: the classic aging-curve baseline."""
     return pairs.groupby("age")[[f"{t}_delta" for t in targets]].mean()
+
+
+def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    """Quantile ``q`` of ``values`` where each value counts with its weight."""
+    order = np.argsort(values)
+    v, w = values[order], weights[order]
+    cum = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(q, cum, v))
+
+
+def projection_range(
+    comps: pd.DataFrame,
+    target_raw: pd.Series,
+    targets: Sequence[str] = TARGETS,
+    low: float = 0.1,
+    high: float = 0.9,
+) -> pd.DataFrame:
+    """Range of plausible outcomes: weighted percentiles of the comparables' changes.
+
+    Returns one row per stat with ``low`` and ``high`` columns (raw units).
+    """
+    w = comps["similarity"].to_numpy(dtype=float)
+    rows = {}
+    for t in targets:
+        d = comps[f"{t}_delta"].to_numpy(dtype=float)
+        base = float(target_raw[t])
+        rows[t] = {"low": base + weighted_quantile(d, w, low), "high": base + weighted_quantile(d, w, high)}
+    return pd.DataFrame(rows).T

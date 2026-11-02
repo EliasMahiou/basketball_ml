@@ -7,6 +7,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`twins`](#statistical-twins) | Ready | Finds a player's "statistical twin" for a season or a whole career, across every era |
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form and rest |
+| [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 
 ## Installation
 
@@ -24,7 +25,7 @@ Download the Kaggle dataset [NBA Stats (1947-present)](https://www.kaggle.com/da
 kaggle datasets download sumitrodatta/nba-aba-baa-stats -f Advanced.csv -p data --unzip
 ```
 
-Game predictions use play-by-play and shot charts from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season).
+Play-by-play and shot charts come from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. Game predictions and play-by-play style use these files. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season).
 
 ## Statistical twins
 
@@ -160,6 +161,54 @@ Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted 
 
 Lower log loss and Brier score are better. Injuries and lineups are not used yet, and they are the main gap with professional models.
 
+## Play-by-play style
+
+![NBA style map](docs/style_map_2025.png)
+
+Box scores say how much a player produces. Play-by-play shows **how** he plays: where he shoots from, which kind of shots, how often his makes are assisted, how he turns the ball over.
+
+### Method
+
+1. **34 style features** per player-season (300+ shot attempts), all shares or rates, so they don't depend on playing time:
+    - **Touches**: field goal attempts, free throws, assists, offensive and defensive rebounds, steals, blocks, turnovers, fouls and fouls drawn, each as a share of the player's total involvement
+    - **Shot diet**: share of attempts at the rim, in the paint, from mid-range, from the corners and above the break, plus dunks, layups, putbacks, floaters, hooks, post fadeaways, pull-ups, drives, cuts, lobs and catch-and-shoot jumpers
+    - **Shot making**: field goal percentage by zone, shrunk toward the league average
+    - **Creation**: share of made shots that were assisted, share of turnovers that were bad passes, average shot distance
+2. **Per-season z-scores**, as in the twins module.
+3. **Archetypes**: k-means clusters, each named by its three most distinctive traits.
+4. **Style map**: the two main axes of the features (PCA). One runs from perimeter to interior, the other from self-created to spot-up.
+5. **Compact embedding**: an autoencoder squeezes the 34 features into 8 numbers.
+
+### Usage
+
+```bash
+basketball-ml style-twins "Stephen Curry"         # closest styles since 2013-14
+basketball-ml archetypes --season 2025 --map docs/style_map_2025.png
+basketball-ml style-backtest --advanced data/Advanced.csv
+```
+
+```
+Closest play-by-play styles to Stephen Curry in 2024-25:
+
+  D'Angelo Russell           2022-23  similarity 60.5
+  Dennis Schroder            2019-20  similarity 55.9
+  Paul George                2020-21  similarity 54.8
+```
+
+### Does it capture a player's identity?
+
+Here's the test: take a player's season, then look among every player's **next** season for the closest one. The question is whether his own next season comes out first. There are 2,254 player-seasons from 2013-14 to 2023-24, each picked from about 270 candidates.
+
+| Vector | Own next season found first | In the top 5 |
+| --- | --- | --- |
+| Box-score advanced stats (12, from the twins module) | 47.4% | 74.9% |
+| **Play-by-play style (34)** | **65.8%** | **87.9%** |
+| Both | 69.9% | 90.2% |
+| Style compressed to 8 numbers (PCA) | 44.7% | 76.6% |
+| Style compressed to 8 numbers (autoencoder) | 41.3% | 72.2% |
+
+Play-by-play style is a much stronger fingerprint than box-score rates. Compressing it to 8 numbers keeps 78% of its variance, but it loses what makes each player unique. That's why style twins use the full 34 features, while the 8-number embedding is kept for maps and clustering.
+
 ## Project layout
 
 ```
@@ -175,10 +224,15 @@ src/basketball_ml/
 │   ├── comparables.py # same-age comparables, weighted projections and 80% ranges
 │   ├── backtest.py    # error against no-change and age-curve baselines
 │   └── cli.py         # basketball-ml project / backtest
-└── predictions/
-    ├── games.py       # game results, Elo and pre-game features
-    ├── model.py       # win-probability models and walk-forward evaluation
-    └── cli.py         # basketball-ml predict / ratings / games-backtest
+├── predictions/
+│   ├── games.py       # game results, Elo and pre-game features
+│   ├── model.py       # win-probability models and walk-forward evaluation
+│   └── cli.py         # basketball-ml predict / ratings / games-backtest
+└── embeddings/
+    ├── features.py    # 34 style features from play-by-play and shot charts
+    ├── model.py       # autoencoder, PCA and the identification test
+    ├── archetypes.py  # k-means archetypes and the style map
+    └── cli.py         # basketball-ml style-twins / archetypes / style-backtest
 tests/
 ```
 
@@ -191,6 +245,7 @@ pytest
 ## Roadmap
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
-- **Style embeddings** learned from play-by-play data, as in [NBA2Vec](https://arxiv.org/abs/2302.13386), to replace aggregated stats.
+- **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
+- **Style-aware projections**: use play-by-play style to pick comparables.
 - **Injuries and lineups** in game predictions, from who actually played in each game.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

@@ -41,16 +41,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run_predict)
 
 
-def _ratings(stints: pd.DataFrame, seasons) -> dict[int, pd.DataFrame]:
-    """RAPM for each season, fitted on the seasons before it."""
-    from ..impact import ratings_before
-
-    return {season: ratings_before(stints, season) for season in seasons}
-
-
 def _games(args: argparse.Namespace, lineups: bool = True):
     """Games with pre-game features, the league state after the last one, and lineup data."""
-    from ..impact import player_seconds
+    from ..impact import player_seconds, rating_schedule, ratings_before
     from ..impact.cli import load_stints
 
     seasons = range(args.first_season, args.last_season + 1)
@@ -64,15 +57,13 @@ def _games(args: argparse.Namespace, lineups: bool = True):
     games = add_availability(games, appearances)
     stints = load_stints(data_dir, args.first_season, args.last_season)
 
-    def build_ratings() -> pd.DataFrame:
-        ratings = _ratings(stints, range(args.first_season + 1, args.last_season + 2))
-        return pd.concat([r.assign(season=s) for s, r in ratings.items()], ignore_index=True)
-
-    ratings = cached_csv(data_dir / f"rapm_before_{tag}.csv", build_ratings)
-    by_season = {s: r for s, r in ratings.groupby("season")}
+    dates = games.set_index("game_id")["date"]
+    ratings = cached_csv(data_dir / f"rapm_schedule_{tag}.csv", parse_dates=["as_of"], build=lambda: rating_schedule(
+        stints, dates, range(args.first_season + 1, args.last_season + 1)))
     seconds = player_seconds(stints)
-    games = add_impact(games, seconds, {s: r for s, r in by_season.items() if s <= args.last_season})
-    return games, state, {"appearances": appearances, "seconds": seconds, "next_ratings": by_season[args.last_season + 1]}
+    games = add_impact(games, seconds, ratings)
+    latest = cached_csv(data_dir / f"rapm_latest_{tag}.csv", lambda: ratings_before(stints, args.last_season + 1))
+    return games, state, {"appearances": appearances, "seconds": seconds, "latest_ratings": latest}
 
 
 def run_backtest(args: argparse.Namespace) -> None:
@@ -109,7 +100,8 @@ def run_predict(args: argparse.Namespace) -> None:
     feats = state.features(home, away)
     seconds = lineup_data["seconds"]
     seconds = seconds[seconds["season"] == args.last_season].groupby("player_id")["seconds"].mean()
-    rating = dict(zip(lineup_data["next_ratings"]["player_id"], lineup_data["next_ratings"]["rapm"]))
+    latest = lineup_data["latest_ratings"]
+    rating = dict(zip(latest["player_id"], latest["rapm"]))
     lineups = {}
     for side, team, out in (("home", home, args.out_home), ("away", away, args.out_away)):
         names = [n.strip() for n in out.split(",") if n.strip()]

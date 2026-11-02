@@ -133,22 +133,30 @@ def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 
     return games
 
 
-def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: dict[int, pd.DataFrame]) -> pd.DataFrame:
+def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: pd.DataFrame) -> pd.DataFrame:
     """Add ``rapm_home``, ``rapm_away`` and ``rapm_diff``: the impact of who plays.
 
     ``seconds`` is time on the court per player and game (see
-    :func:`basketball_ml.impact.player_seconds`) and ``ratings`` maps each season
-    to RAPM ratings fitted on earlier seasons only. A side's value is the
-    minutes-weighted average rating of the players who play, times 5: the
-    expected margin per 100 possessions of its lineups against average players.
-    Expected minutes are each player's average so far this season (last
-    season's until he has 3 games). Seasons without ratings get 0.
+    :func:`basketball_ml.impact.player_seconds`). ``ratings`` holds RAPM
+    ratings with the ``season`` they serve and the date ``as_of`` which they
+    can be used (see :func:`basketball_ml.impact.rating_schedule`); each game
+    uses the latest ratings of its season dated on or before it. A side's value
+    is the minutes-weighted average rating of the players who play, times 5:
+    the expected margin per 100 possessions of its lineups against average
+    players. Expected minutes are each player's average so far this season
+    (last season's until he has 3 games). Games without ratings get 0.
     """
     from ..impact.rapm import NEWCOMER
 
     games = games.sort_values(["date", "game_id"]).reset_index(drop=True)
     lineups = {key: dict(zip(g["player_id"], g["seconds"])) for key, g in seconds.groupby(["game_id", "side"])}
-    rating_maps = {season: dict(zip(r["player_id"], r["rapm"])) for season, r in ratings.items()}
+    ratings = ratings.assign(as_of=pd.to_datetime(ratings["as_of"]))
+    schedule: dict[int, tuple[np.ndarray, list[dict]]] = {}
+    for season, block in ratings.groupby("season"):
+        stamps = sorted(block["as_of"].unique())
+        maps = [dict(zip(r["player_id"], r["rapm"])) for _, r in block.groupby("as_of", sort=True)]
+        schedule[int(season)] = (np.array(stamps, dtype="datetime64[ns]"), maps)
+
     total: dict = defaultdict(float)
     count: dict = defaultdict(int)
     previous: dict = {}
@@ -161,7 +169,11 @@ def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: dict[int, pd
             total.clear()
             count.clear()
             season = g.season
-        rating = rating_maps.get(g.season)
+        rating = None
+        if g.season in schedule:
+            stamps, maps = schedule[g.season]
+            i = int(np.searchsorted(stamps, np.datetime64(g.date, "ns"), side="right")) - 1
+            rating = maps[i] if i >= 0 else None
         for side in ("home", "away"):
             players = lineups.get((g.game_id, side), {})
             if rating is None or not players:

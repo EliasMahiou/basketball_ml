@@ -126,6 +126,42 @@ def ratings_before(stints: pd.DataFrame, season: int, window: int = DEFAULT_WIND
     return fit_rapm(stints[stints["season"].isin(seasons)], alpha, recency_weights(seasons, half_life))
 
 
+def ratings_as_of(stints: pd.DataFrame, dates: pd.Series, season: int, as_of: pd.Timestamp,
+                  window: int = DEFAULT_WINDOW, half_life: float = DEFAULT_HALF_LIFE,
+                  alpha: float = DEFAULT_ALPHA) -> pd.DataFrame:
+    """RAPM during ``season``: the ``window`` seasons before plus its games played before ``as_of``.
+
+    ``dates`` maps game ids to game dates.
+    """
+    game_dates = stints["game_id"].map(dates)
+    earlier = stints["season"].between(season - window, season - 1)
+    so_far = (stints["season"] == season) & (game_dates < as_of)
+    seasons = list(range(season - window, season + 1))
+    return fit_rapm(stints[earlier | so_far], alpha, recency_weights(seasons, half_life))
+
+
+def rating_schedule(stints: pd.DataFrame, dates: pd.Series, seasons: Sequence[int],
+                    every_days: int = 30) -> pd.DataFrame:
+    """Ratings refreshed every ``every_days`` days through each season, each from earlier games only.
+
+    Returns a long table with ``season`` and ``as_of`` (first date the ratings
+    can be used) next to each player's ratings.
+    """
+    stint_seasons = set(stints["season"])
+    season_of = stints.drop_duplicates("game_id").set_index("game_id")["season"]
+    game_dates = pd.DataFrame({"season": season_of, "date": season_of.index.map(dates)}).dropna()
+    parts = []
+    for season in seasons:
+        if not any(s in stint_seasons for s in range(season - DEFAULT_WINDOW, season)):
+            continue
+        played = game_dates.loc[game_dates["season"] == season, "date"]
+        if played.empty:
+            continue
+        for as_of in pd.date_range(played.min(), played.max(), freq=f"{every_days}D"):
+            parts.append(ratings_as_of(stints, dates, season, as_of).assign(season=season, as_of=as_of))
+    return pd.concat(parts, ignore_index=True)
+
+
 def on_court_net(stints: pd.DataFrame, shrink: float = 1000.0) -> pd.DataFrame:
     """Unadjusted plus-minus: team margin per 100 possessions with the player on the court.
 

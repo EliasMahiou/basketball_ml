@@ -76,3 +76,16 @@ def test_player_seconds_and_lineup_rapm():
     assert seconds["seconds"].sum() == 10 * 120 * 40
     assert lineup_rapm({1: 600, 2: 1800}, {1: 4.0, 2: 0.0}, default=-1.5) == 5.0
     assert lineup_rapm({1: 600, 3: 600}, {1: 4.0}, default=-2.0) == 5.0
+
+
+def test_add_impact_uses_the_latest_ratings_dated_before_each_game():
+    from basketball_ml.predictions import add_impact
+
+    games = pd.DataFrame({"game_id": [1, 2], "season": 2020, "home": "AAA", "away": "BBB",
+                          "date": pd.to_datetime(["2020-01-01", "2020-02-01"])})
+    seconds = pd.DataFrame({"game_id": [1, 1, 2, 2], "side": ["home", "away"] * 2,
+                            "player_id": [7, 8, 7, 8], "seconds": [2400.0] * 4})
+    ratings = pd.DataFrame({"season": 2020, "player_id": [7, 8, 7, 8], "rapm": [1.0, 0.0, 3.0, 0.0],
+                            "as_of": pd.to_datetime(["2020-01-01"] * 2 + ["2020-01-15"] * 2)})
+    out = add_impact(games, seconds, ratings)
+    assert out["rapm_diff"].tolist() == [5.0, 15.0]

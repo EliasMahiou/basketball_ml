@@ -140,14 +140,14 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 
 ### Method
 
-1. **Games**: final scores come from the last scoring event of each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2024-25 (15,665 games).
+1. **Games**: final scores are the highest score reached in each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2024-25 (15,665 games).
 2. **Pre-game features**, computed only from earlier games:
     - **Elo** with a margin-of-victory multiplier and 25% regression to the mean between seasons, as in FiveThirtyEight's model. Its 100-point home edge is lowered to 60, because home teams win less often than they used to (about 59% of games until 2018-19, about 55% since).
     - **Form**: average margin over each team's last 10 games
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
     - **Lineup strength**: who actually played. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games. A team's strength is the sum over its 10 best players in the game. Who plays is known shortly before tip-off from injury reports, so the backtest treats it as known.
-    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, from the two previous seasons, weighted by their usual minutes.
+    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons.
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
@@ -157,7 +157,7 @@ basketball-ml predict OKC DEN                 # OKC (home) vs DEN: OKC 78%, DEN 
 basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops to 70%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
-basketball-ml games-backtest --calibration docs/calibration.png   # walk-forward evaluation
+basketball-ml games-backtest --calibration docs/calibration.png      # walk-forward evaluation
 ```
 
 ### Backtest
@@ -170,10 +170,11 @@ Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted 
 | Elo alone | 64.6% | 0.626 | 0.218 |
 | Logistic regression, without lineups | 65.1% | 0.623 | 0.217 |
 | Logistic regression, with lineup strength | 65.7% | 0.616 | 0.214 |
-| **Logistic regression, with lineup strength and impact** | **66.3%** | **0.611** | **0.212** |
-| Gradient boosting, same features | 66.1% | 0.614 | 0.213 |
+| Logistic regression, with lineup strength and impact from previous seasons | 66.3% | 0.611 | 0.212 |
+| **Logistic regression, with impact ratings refreshed monthly** | **66.6%** | **0.610** | **0.211** |
+| Gradient boosting, same features | 66.2% | 0.613 | 0.212 |
 
-Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6165, both 0.6114. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
+Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6139, both 0.6100. Refreshing ratings during the season lets rookies and players whose role changed move away from last season's value (or the rookie default) instead of keeping it all year. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
 
 ### Calibration
 
@@ -181,7 +182,7 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6114 to 0.6108), so it isn't used.
+Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6100 to 0.6090), so it isn't used.
 
 ## Play-by-play style
 
@@ -279,7 +280,7 @@ Ratings from the two previous seasons, applied to the players actually on the co
 | Adjusted plus-minus without shrinkage | 11.5% |
 | Raw on-court net rating | 11.4% |
 
-RAPM is the best rating in 8 of the 10 seasons (it ties raw net rating in 2015-16, and box-score production wins the odd 2020-21 season, played mostly without fans). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both is what lifts accuracy to 66.3%.
+RAPM is the best rating in 8 of the 10 seasons (it ties raw net rating in 2015-16, and box-score production wins the odd 2020-21 season, played mostly without fans). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 66.6%.
 
 ## Project layout
 

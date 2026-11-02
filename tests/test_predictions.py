@@ -104,3 +104,15 @@ def test_expected_lineup_drops_players_marked_out():
     without, _ = expected_lineup(apps, games, "AAA", out=["P1"])
     assert "P1" in set(players["player"])
     assert np.isclose(full - without, 30.0)
+
+
+def test_calibration_bins_and_error():
+    from basketball_ml.predictions import calibration, calibration_error
+    rng = np.random.default_rng(0)
+    p = rng.uniform(0.05, 0.95, 20_000)
+    results = pd.DataFrame({"p_logistic": p, "home_win": (rng.uniform(size=p.size) < p).astype(int)})
+    table = calibration(results)
+    assert len(table) == 10 and table["games"].sum() == p.size
+    assert calibration_error(results) < 0.02
+    results["p_logistic"] = np.clip(p + 0.1, 0, 1)    # overconfident in home teams
+    assert calibration_error(results) > 0.08

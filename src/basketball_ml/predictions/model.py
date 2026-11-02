@@ -67,3 +67,25 @@ def evaluate(results: pd.DataFrame, methods: Sequence[str] = METHODS) -> pd.Data
                    "log_loss": float(log_loss(y, p, labels=[0, 1])),
                    "brier": float(brier_score_loss(y, p))}
     return pd.DataFrame(rows).T
+
+
+def calibration(results: pd.DataFrame, method: str = "logistic", bins: int = 10) -> pd.DataFrame:
+    """Predicted vs observed home win rate, in equal-width probability bins.
+
+    A calibrated model's games predicted at 70% are won about 70% of the time.
+    Returns one row per non-empty bin: ``predicted`` (mean probability),
+    ``observed`` (share of home wins) and ``games``.
+    """
+    p = results[f"p_{method}"].to_numpy()
+    edges = np.linspace(0, 1, bins + 1)
+    which = np.clip(np.digitize(p, edges[1:-1]), 0, bins - 1)
+    table = pd.DataFrame({"bin": which, "p": p, "y": results["home_win"].to_numpy()})
+    out = table.groupby("bin").agg(predicted=("p", "mean"), observed=("y", "mean"), games=("y", "size"))
+    out.index = [f"{edges[i]:.0%}-{edges[i + 1]:.0%}" for i in out.index]
+    return out
+
+
+def calibration_error(results: pd.DataFrame, method: str = "logistic", bins: int = 10) -> float:
+    """Expected calibration error: game-weighted average gap between predicted and observed."""
+    table = calibration(results, method, bins)
+    return float(np.average((table["predicted"] - table["observed"]).abs(), weights=table["games"]))

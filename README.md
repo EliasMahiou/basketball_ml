@@ -6,7 +6,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | --- | --- | --- |
 | [`twins`](#statistical-twins) | Ready | Finds a player's "statistical twin" for a season or a whole career, across every era |
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
-| [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form and rest |
+| [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 
 ## Installation
@@ -141,7 +141,7 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 
 1. **Games**: final scores come from the last scoring event of each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2024-25 (15,665 games).
 2. **Pre-game features**, computed only from earlier games:
-    - **Elo** with a margin-of-victory multiplier, a 100-point home edge, and 25% regression to the mean between seasons, as in FiveThirtyEight's model
+    - **Elo** with a margin-of-victory multiplier and 25% regression to the mean between seasons, as in FiveThirtyEight's model. Its 100-point home edge is lowered to 60, because home teams win less often than they used to (about 59% of games until 2018-19, about 55% since).
     - **Form**: average margin over each team's last 10 games
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
@@ -151,11 +151,11 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 ### Usage
 
 ```bash
-basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 65%, BOS 35%
-basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops from 74% to 69%
+basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 66%, BOS 34%
+basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops from 75% to 69%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
-basketball-ml games-backtest                  # walk-forward evaluation
+basketball-ml games-backtest --calibration docs/calibration.png   # walk-forward evaluation
 ```
 
 ### Backtest
@@ -165,12 +165,20 @@ Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted 
 | Model | Accuracy | Log loss | Brier score |
 | --- | --- | --- | --- |
 | Always the home team | 56.0% | 0.687 | 0.247 |
-| Elo alone | 64.4% | 0.635 | 0.222 |
-| Logistic regression, without lineups | 65.1% | 0.624 | 0.217 |
-| **Logistic regression** | **65.8%** | **0.616** | **0.214** |
-| Gradient boosting | 65.7% | 0.619 | 0.215 |
+| Elo alone | 64.6% | 0.626 | 0.218 |
+| Logistic regression, without lineups | 65.1% | 0.623 | 0.217 |
+| **Logistic regression** | **65.7%** | **0.616** | **0.214** |
+| Gradient boosting | 66.1% | 0.619 | 0.215 |
 
 Lower log loss and Brier score are better. Lineup strength is the biggest single gain after Elo. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
+
+### Calibration
+
+A win probability is only useful if it means what it says: games predicted at 70% should be won about 70% of the time.
+
+![Calibration chart](docs/calibration.png)
+
+Both models track the diagonal, with an average gap of under 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6158 to 0.6154), so it isn't used.
 
 ## Play-by-play style
 
@@ -238,7 +246,8 @@ src/basketball_ml/
 ├── predictions/
 │   ├── games.py       # game results, Elo and pre-game features
 │   ├── availability.py # who played in each game and lineup strength
-│   ├── model.py       # win-probability models and walk-forward evaluation
+│   ├── model.py       # win-probability models, walk-forward evaluation and calibration
+│   ├── plot.py        # calibration chart
 │   └── cli.py         # basketball-ml predict / ratings / games-backtest
 └── embeddings/
     ├── features.py    # 34 style features from play-by-play and shot charts

@@ -11,10 +11,12 @@ import pandas as pd
 
 from .. import pbp
 
-# Elo settings in the style of FiveThirtyEight's NBA model.
+# Elo settings in the style of FiveThirtyEight's NBA model. Its 100-point home
+# edge is too large since home teams stopped winning ~59% of games (~55% since
+# 2019-20); 60 points was best on the 2017-18 to 2020-21 backtest seasons.
 ELO_START = 1505.0
 ELO_K = 20.0
-ELO_HOME = 100.0
+ELO_HOME = 60.0
 ELO_CARRYOVER = 0.75
 ROLLING_GAMES = 10
 MAX_REST = 4

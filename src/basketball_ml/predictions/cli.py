@@ -9,7 +9,7 @@ import pandas as pd
 
 from .availability import add_availability, build_player_games, expected_lineup
 from .games import LINEUP_FEATURES, add_features, build_games
-from .model import evaluate, make_model, walk_forward
+from .model import calibration, calibration_error, evaluate, make_model, walk_forward
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -21,6 +21,7 @@ def _common(p: argparse.ArgumentParser) -> None:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     b = subparsers.add_parser("games-backtest", help="Evaluate game win-probability models season by season.")
     b.add_argument("--test-from", type=int, default=2018, help="First season predicted out of sample")
+    b.add_argument("--calibration", metavar="PNG", help="Also save a reliability chart to this path")
     _common(b)
     b.set_defaults(func=run_backtest)
 
@@ -68,6 +69,12 @@ def run_backtest(args: argparse.Namespace) -> None:
     print(f"{len(results)} games from {args.test_from - 1}-{str(args.test_from)[-2:]} to "
           f"{args.last_season - 1}-{str(args.last_season)[-2:]}, each season predicted from earlier ones only:\n")
     print(evaluate(results).round(4).to_string())
+    print("\nCalibration of the logistic model (share of home wins by predicted probability):\n")
+    print(calibration(results).round(3).to_string())
+    print(f"\nAverage gap between predicted and actual: {calibration_error(results):.1%}")
+    if args.calibration:
+        from .plot import calibration_plot
+        print(f"Saved {calibration_plot(results, args.calibration)}")
 
 
 def run_ratings(args: argparse.Namespace) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from .predictions import cli as predictions_cli
 from .projections import cli as projections_cli
 from .twins import cli as twins_cli
 
@@ -13,6 +14,7 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     twins_cli.add_parser(subparsers)
     projections_cli.add_parser(subparsers)
+    predictions_cli.add_parser(subparsers)
     args = parser.parse_args(argv)
     args.func(args)
 

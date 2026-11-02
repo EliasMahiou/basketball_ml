@@ -6,7 +6,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | --- | --- | --- |
 | [`twins`](#statistical-twins) | Ready | Finds a player's "statistical twin" for a season or a whole career, across every era |
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
-| `predictions` | Planned | Predicts game outcomes |
+| [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form and rest |
 
 ## Installation
 
@@ -23,6 +23,8 @@ Download the Kaggle dataset [NBA Stats (1947-present)](https://www.kaggle.com/da
 # with the Kaggle CLI (kaggle.json configured)
 kaggle datasets download sumitrodatta/nba-aba-baa-stats -f Advanced.csv -p data --unzip
 ```
+
+Game predictions use play-by-play and shot charts from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season).
 
 ## Statistical twins
 
@@ -124,20 +126,59 @@ The ranges are slightly too narrow (77% instead of 80% for BPM), and the 3-point
 
 Limits: only players who stayed in the league with 500+ minutes have an outcome, so comparables are biased toward careers that continued. League-wide trends (like the rise of the 3-point shot) are only partly captured, because comparables come from earlier seasons.
 
+## Game predictions
+
+### Method
+
+1. **Games**: final scores come from the last scoring event of each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2024-25 (15,665 games).
+2. **Pre-game features**, computed only from earlier games:
+    - **Elo** with a margin-of-victory multiplier, a 100-point home edge, and 25% regression to the mean between seasons, as in FiveThirtyEight's model
+    - **Form**: average margin over each team's last 10 games
+    - **Season**: season-to-date average margin
+    - **Rest**: days since each team's previous game, and back-to-back flags
+3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
+
+### Usage
+
+```bash
+basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 66%, BOS 34%
+basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
+basketball-ml ratings                         # Elo table after the last season loaded
+basketball-ml games-backtest                  # walk-forward evaluation
+```
+
+### Backtest
+
+Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted by a model trained only on the seasons before it:
+
+| Model | Accuracy | Log loss | Brier score |
+| --- | --- | --- | --- |
+| Always the home team | 56.0% | 0.687 | 0.247 |
+| Elo alone | 64.4% | 0.635 | 0.222 |
+| **Logistic regression** | **65.1%** | **0.624** | **0.217** |
+| Gradient boosting | 64.7% | 0.627 | 0.219 |
+
+Lower log loss and Brier score are better. Injuries and lineups are not used yet, and they are the main gap with professional models.
+
 ## Project layout
 
 ```
 src/basketball_ml/
-├── data.py          # shared loaders (Basketball-Reference advanced stats)
+├── data.py          # Basketball-Reference advanced stats loader
+├── pbp.py           # play-by-play and shot chart downloader
 ├── cli.py           # basketball-ml entry point, one subcommand per module
 ├── twins/
 │   ├── similarity.py  # per-season z-scores, career profiles, nearest neighbors
 │   ├── plot.py        # percentile radar charts
 │   └── cli.py         # basketball-ml twins
-└── projections/
-    ├── comparables.py # same-age comparables and weighted projections
-    ├── backtest.py    # error against no-change and age-curve baselines
-    └── cli.py         # basketball-ml project / backtest
+├── projections/
+│   ├── comparables.py # same-age comparables, weighted projections and 80% ranges
+│   ├── backtest.py    # error against no-change and age-curve baselines
+│   └── cli.py         # basketball-ml project / backtest
+└── predictions/
+    ├── games.py       # game results, Elo and pre-game features
+    ├── model.py       # win-probability models and walk-forward evaluation
+    └── cli.py         # basketball-ml predict / ratings / games-backtest
 tests/
 ```
 
@@ -151,5 +192,5 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Style embeddings** learned from play-by-play data, as in [NBA2Vec](https://arxiv.org/abs/2302.13386), to replace aggregated stats.
-- **Game predictions** from recent form, rest, injuries and Elo-style ratings.
+- **Injuries and lineups** in game predictions, from who actually played in each game.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

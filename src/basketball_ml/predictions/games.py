@@ -23,6 +23,7 @@ MAX_REST = 4
 
 FEATURES = ["elo_diff", "form_diff", "season_diff", "rest_diff", "b2b_home", "b2b_away"]
 LINEUP_FEATURES = [*FEATURES, "strength_diff"]
+IMPACT_FEATURES = [*LINEUP_FEATURES, "rapm_diff"]
 
 TEAM_ALIASES = {"NOH": "NOP", "NJN": "BKN", "CHH": "CHA", "SEA": "OKC", "VAN": "MEM"}
 

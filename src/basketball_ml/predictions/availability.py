@@ -23,6 +23,7 @@ from .games import TEAM_ALIASES
 
 RECENT_GAMES = 10   # a player counts as part of the team if he played in one of its last 10 games
 MIN_GAMES = 3       # ...and in at least 3 games this season
+DEFAULT_SECONDS = 720.0  # expected playing time of a player with no history (12 minutes)
 
 
 def player_games(season: int, data_dir: str | Path = "data/pbp") -> pd.DataFrame:
@@ -132,13 +133,67 @@ def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 
     return games
 
 
+def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """Add ``rapm_home``, ``rapm_away`` and ``rapm_diff``: the impact of who plays.
+
+    ``seconds`` is time on the court per player and game (see
+    :func:`basketball_ml.impact.player_seconds`) and ``ratings`` maps each season
+    to RAPM ratings fitted on earlier seasons only. A side's value is the
+    minutes-weighted average rating of the players who play, times 5: the
+    expected margin per 100 possessions of its lineups against average players.
+    Expected minutes are each player's average so far this season (last
+    season's until he has 3 games). Seasons without ratings get 0.
+    """
+    from ..impact.rapm import NEWCOMER
+
+    games = games.sort_values(["date", "game_id"]).reset_index(drop=True)
+    lineups = {key: dict(zip(g["player_id"], g["seconds"])) for key, g in seconds.groupby(["game_id", "side"])}
+    rating_maps = {season: dict(zip(r["player_id"], r["rapm"])) for season, r in ratings.items()}
+    total: dict = defaultdict(float)
+    count: dict = defaultdict(int)
+    previous: dict = {}
+    season = None
+    out = {"rapm_home": [], "rapm_away": []}
+    for g in games.itertuples(index=False):
+        if g.season != season:
+            if season is not None:
+                previous = {pid: total[pid] / count[pid] for pid in count if count[pid] >= MIN_GAMES}
+            total.clear()
+            count.clear()
+            season = g.season
+        rating = rating_maps.get(g.season)
+        for side in ("home", "away"):
+            players = lineups.get((g.game_id, side), {})
+            if rating is None or not players:
+                out[f"rapm_{side}"].append(0.0)
+                continue
+            expected = {pid: total[pid] / count[pid] if count[pid] >= MIN_GAMES else previous.get(pid, DEFAULT_SECONDS)
+                        for pid in players}
+            out[f"rapm_{side}"].append(lineup_rapm(expected, rating, NEWCOMER))
+        for side in ("home", "away"):
+            for pid, sec in lineups.get((g.game_id, side), {}).items():
+                total[pid] += sec
+                count[pid] += 1
+    games = games.assign(**out)
+    games["rapm_diff"] = games["rapm_home"] - games["rapm_away"]
+    return games
+
+
+def lineup_rapm(expected_seconds: dict, rating: dict, default: float) -> float:
+    """5 x the minutes-weighted average rating of the players in ``expected_seconds``."""
+    weight = sum(expected_seconds.values())
+    if weight <= 0:
+        return 0.0
+    return 5 * sum(rating.get(pid, default) * sec for pid, sec in expected_seconds.items()) / weight
+
+
 def expected_lineup(appearances: pd.DataFrame, games: pd.DataFrame, team: str, out: Iterable[str] = (),
                     top: int = 10) -> tuple[float, pd.DataFrame]:
     """Strength of ``team``'s regulars after the last game loaded, minus players listed in ``out``.
 
     Regulars are players whose most recent game was for ``team``, with 3+ games
     that season and an appearance in its last 10 games. Returns the strength
-    and the players counted.
+    and all the regulars, best first (the strength counts the first ``top``).
     """
     from ..twins.similarity import _normalize
 
@@ -156,5 +211,5 @@ def expected_lineup(appearances: pd.DataFrame, games: pd.DataFrame, team: str, o
                      & stats.index.isin(seen_recent)]
     skip = {_normalize(n) for n in out}
     regulars = regulars[~regulars["player"].map(_normalize).isin(skip)]
-    regulars = regulars.sort_values("production", ascending=False).head(top)
-    return float(regulars["production"].sum()), regulars.reset_index()
+    regulars = regulars.sort_values("production", ascending=False)
+    return float(regulars["production"].head(top).sum()), regulars.reset_index()

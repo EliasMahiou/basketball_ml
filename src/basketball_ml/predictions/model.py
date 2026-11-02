@@ -12,7 +12,7 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .games import FEATURES, LINEUP_FEATURES
+from .games import FEATURES, IMPACT_FEATURES, LINEUP_FEATURES
 
 METHODS = ("home_court", "elo", "logistic", "boosting")
 
@@ -28,7 +28,9 @@ def make_model(method: str):
 
 
 def default_features(games: pd.DataFrame) -> list[str]:
-    """Lineup-aware features when ``strength_diff`` is available, else the base set."""
+    """The richest feature set available: with player impact, with lineup strength, or the base set."""
+    if "rapm_diff" in games and "strength_diff" in games:
+        return list(IMPACT_FEATURES)
     return list(LINEUP_FEATURES) if "strength_diff" in games else list(FEATURES)
 
 

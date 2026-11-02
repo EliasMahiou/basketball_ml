@@ -8,6 +8,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
+| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), from who is on the court |
 
 ## Installation
 
@@ -146,13 +147,14 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
     - **Lineup strength**: who actually played. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games. A team's strength is the sum over its 10 best players in the game. Who plays is known shortly before tip-off from injury reports, so the backtest treats it as known.
+    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, from the two previous seasons, weighted by their usual minutes.
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
 
 ```bash
-basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 66%, BOS 34%
-basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops from 75% to 69%
+basketball-ml predict OKC DEN                 # OKC (home) vs DEN: OKC 78%, DEN 22%
+basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops to 70%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
 basketball-ml games-backtest --calibration docs/calibration.png   # walk-forward evaluation
@@ -167,10 +169,11 @@ Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted 
 | Always the home team | 56.0% | 0.687 | 0.247 |
 | Elo alone | 64.6% | 0.626 | 0.218 |
 | Logistic regression, without lineups | 65.1% | 0.623 | 0.217 |
-| **Logistic regression** | **65.7%** | **0.616** | **0.214** |
-| Gradient boosting | 66.1% | 0.619 | 0.215 |
+| Logistic regression, with lineup strength | 65.7% | 0.616 | 0.214 |
+| **Logistic regression, with lineup strength and impact** | **66.3%** | **0.611** | **0.212** |
+| Gradient boosting, same features | 66.1% | 0.614 | 0.213 |
 
-Lower log loss and Brier score are better. Lineup strength is the biggest single gain after Elo. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
+Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6165, both 0.6114. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
 
 ### Calibration
 
@@ -178,7 +181,7 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of under 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6158 to 0.6154), so it isn't used.
+Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6114 to 0.6108), so it isn't used.
 
 ## Play-by-play style
 
@@ -228,12 +231,63 @@ Here's the test: take a player's season, then look among every player's **next**
 
 Play-by-play style is a much stronger fingerprint than box-score rates. Compressing it to 8 numbers keeps 78% of its variance, but it loses what makes each player unique. That's why style twins use the full 34 features, while the 8-number embedding is kept for maps and clustering.
 
+## Player impact (RAPM)
+
+How many points does a player add to his team per 100 possessions, once you account for who he shares the court with? Regularized adjusted plus-minus (RAPM) answers it from the play-by-play alone.
+
+### Method
+
+1. **Who is on the court.** The play-by-play lists substitutions but not who starts each quarter, so the starters of a quarter are the players whose first appearance in it isn't being subbed in. This works for 99.7% of quarters; the rest (a player who never touches the ball for a whole quarter) are skipped. Events are kept in file order, because event numbers are often out of order around substitutions.
+2. **Stints.** Each stretch with the same ten players gives the points each team scored and its possessions (`FGA + 0.44 FTA - OREB + TOV`). That's 772,000 stints from 2012-13 to 2024-25.
+3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward average, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
+4. **Tuning.** The shrinkage (`alpha = 4000`), the window and the rating of unrated players (rookies, -1.5) were chosen on 2015-16 to 2018-19 only, by how well each season's ratings explain the next season's game margins.
+
+### Usage
+
+```bash
+basketball-ml impact                      # leaderboard over the last two seasons
+basketball-ml impact "Victor Wembanyama"  # one player, with his rank
+basketball-ml impact --season 2016 --top 5
+basketball-ml impact-backtest             # RAPM vs simpler ratings, season by season
+```
+
+2023-24 and 2024-25, players with 3,000+ offensive possessions:
+
+| | Player | Offense | Defense | RAPM |
+| --- | --- | --- | --- | --- |
+| 1 | Shai Gilgeous-Alexander | +4.9 | +2.1 | +7.0 |
+| 2 | Nikola Jokić | +6.4 | +0.5 | +7.0 |
+| 3 | Giannis Antetokounmpo | +4.4 | +1.0 | +5.4 |
+| 4 | Luka Dončić | +3.8 | +0.8 | +4.6 |
+| 5 | Kawhi Leonard | +3.1 | +1.4 | +4.6 |
+| 6 | Herbert Jones | +1.5 | +3.0 | +4.5 |
+| 7 | Franz Wagner | +1.6 | +2.8 | +4.4 |
+| 8 | Dorian Finney-Smith | +2.3 | +2.1 | +4.4 |
+| 9 | Dean Wade | +1.4 | +2.8 | +4.1 |
+| 10 | Draymond Green | +1.2 | +2.7 | +4.0 |
+
+The 2014-15 and 2015-16 top 5 is Draymond Green, Stephen Curry, LeBron James, Kawhi Leonard and Chris Paul. Defensive specialists (Herbert Jones, Dean Wade, Alex Caruso) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
+
+### Does it work?
+
+Ratings from the two previous seasons, applied to the players actually on the court in each stint, explain this share of the variance of every game's final margin (2015-16 to 2024-25, about 12,000 games):
+
+| Rating | Margin explained |
+| --- | --- |
+| **RAPM** | **14.7%** |
+| Box-score production per game | 11.7% |
+| Adjusted plus-minus without shrinkage | 11.5% |
+| Raw on-court net rating | 11.4% |
+
+RAPM is the best rating in 8 of the 10 seasons (it ties raw net rating in 2015-16, and box-score production wins the odd 2020-21 season, played mostly without fans). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both is what lifts accuracy to 66.3%.
+
 ## Project layout
 
 ```
 src/basketball_ml/
 ├── data.py          # Basketball-Reference advanced stats loader
 ├── pbp.py           # play-by-play and shot chart downloader
+├── cache.py         # derived tables cached as CSV
 ├── cli.py           # basketball-ml entry point, one subcommand per module
 ├── twins/
 │   ├── similarity.py  # per-season z-scores, career profiles, nearest neighbors
@@ -245,15 +299,19 @@ src/basketball_ml/
 │   └── cli.py         # basketball-ml project / backtest
 ├── predictions/
 │   ├── games.py       # game results, Elo and pre-game features
-│   ├── availability.py # who played in each game and lineup strength
+│   ├── availability.py # who played in each game, lineup strength and impact
 │   ├── model.py       # win-probability models, walk-forward evaluation and calibration
 │   ├── plot.py        # calibration chart
 │   └── cli.py         # basketball-ml predict / ratings / games-backtest
-└── embeddings/
-    ├── features.py    # 34 style features from play-by-play and shot charts
-    ├── model.py       # autoencoder, PCA and the identification test
-    ├── archetypes.py  # k-means archetypes and the style map
-    └── cli.py         # basketball-ml style-twins / archetypes / style-backtest
+├── embeddings/
+│   ├── features.py    # 34 style features from play-by-play and shot charts
+│   ├── model.py       # autoencoder, PCA and the identification test
+│   ├── archetypes.py  # k-means archetypes and the style map
+│   └── cli.py         # basketball-ml style-twins / archetypes / style-backtest
+└── impact/
+    ├── stints.py      # who is on the court, stint by stint
+    ├── rapm.py        # ridge-regression player ratings and their backtest
+    └── cli.py         # basketball-ml impact / impact-backtest
 tests/
 ```
 
@@ -267,5 +325,5 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **Player impact** in game predictions: replace the box-score production sum with an on/off or RAPM-style rating learned from the play-by-play.
+- **RAPM with a box-score prior**: shrink each rating toward a box-score estimate instead of toward zero, and update ratings during the season.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

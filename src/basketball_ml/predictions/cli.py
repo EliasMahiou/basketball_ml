@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from .availability import add_availability, build_player_games, expected_lineup
-from .games import LINEUP_FEATURES, add_features, build_games
+from ..cache import cached_csv
+from .availability import add_availability, add_impact, build_player_games, expected_lineup, lineup_rapm
+from .games import IMPACT_FEATURES, add_features, build_games
 from .model import calibration, calibration_error, evaluate, make_model, walk_forward
 
 
@@ -40,27 +41,38 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run_predict)
 
 
-def _cached(path: Path, build, parse_dates=()):
-    """Read a derived table from ``path``, building and saving it on first use."""
-    if path.exists():
-        return pd.read_csv(path, parse_dates=list(parse_dates))
-    table = build()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_csv(path, index=False)
-    return table
+def _ratings(stints: pd.DataFrame, seasons) -> dict[int, pd.DataFrame]:
+    """RAPM for each season, fitted on the seasons before it."""
+    from ..impact import ratings_before
+
+    return {season: ratings_before(stints, season) for season in seasons}
 
 
 def _games(args: argparse.Namespace, lineups: bool = True):
+    """Games with pre-game features, the league state after the last one, and lineup data."""
+    from ..impact import player_seconds
+    from ..impact.cli import load_stints
+
     seasons = range(args.first_season, args.last_season + 1)
     tag = f"{args.first_season}_{args.last_season}"
     data_dir = Path(args.data_dir)
-    raw = _cached(data_dir / f"games_{tag}.csv", lambda: build_games(seasons, data_dir), parse_dates=["date"])
+    raw = cached_csv(data_dir / f"games_{tag}.csv", lambda: build_games(seasons, data_dir), parse_dates=["date"])
     games, state = add_features(raw)
-    appearances = None
-    if lineups:
-        appearances = _cached(data_dir / f"appearances_{tag}.csv", lambda: build_player_games(seasons, data_dir))
-        games = add_availability(games, appearances)
-    return games, state, appearances
+    if not lineups:
+        return games, state, None
+    appearances = cached_csv(data_dir / f"appearances_{tag}.csv", lambda: build_player_games(seasons, data_dir))
+    games = add_availability(games, appearances)
+    stints = load_stints(data_dir, args.first_season, args.last_season)
+
+    def build_ratings() -> pd.DataFrame:
+        ratings = _ratings(stints, range(args.first_season + 1, args.last_season + 2))
+        return pd.concat([r.assign(season=s) for s, r in ratings.items()], ignore_index=True)
+
+    ratings = cached_csv(data_dir / f"rapm_before_{tag}.csv", build_ratings)
+    by_season = {s: r for s, r in ratings.groupby("season")}
+    seconds = player_seconds(stints)
+    games = add_impact(games, seconds, {s: r for s, r in by_season.items() if s <= args.last_season})
+    return games, state, {"appearances": appearances, "seconds": seconds, "next_ratings": by_season[args.last_season + 1]}
 
 
 def run_backtest(args: argparse.Namespace) -> None:
@@ -86,24 +98,33 @@ def run_ratings(args: argparse.Namespace) -> None:
 
 
 def run_predict(args: argparse.Namespace) -> None:
-    games, state, appearances = _games(args)
+    from ..impact import NEWCOMER
+
+    games, state, lineup_data = _games(args)
     if args.next_season:
         state.start_season(args.last_season + 1)
     home, away = args.home.upper(), args.away.upper()
     if home not in state.elo or away not in state.elo:
         raise SystemExit(f"Unknown team: use abbreviations like {', '.join(sorted(state.elo)[:5])}...")
     feats = state.features(home, away)
+    seconds = lineup_data["seconds"]
+    seconds = seconds[seconds["season"] == args.last_season].groupby("player_id")["seconds"].mean()
+    rating = dict(zip(lineup_data["next_ratings"]["player_id"], lineup_data["next_ratings"]["rapm"]))
     lineups = {}
     for side, team, out in (("home", home, args.out_home), ("away", away, args.out_away)):
         names = [n.strip() for n in out.split(",") if n.strip()]
-        lineups[side] = expected_lineup(appearances, games, team, out=names)
+        strength, regulars = expected_lineup(lineup_data["appearances"], games, team, out=names)
+        expected = {pid: float(seconds.get(pid, 0.0)) for pid in regulars["player_id"]}
+        lineups[side] = (strength, regulars, lineup_rapm(expected, rating, NEWCOMER))
     feats["strength_diff"] = lineups["home"][0] - lineups["away"][0]
-    model = make_model("logistic").fit(games[LINEUP_FEATURES], games["home_win"])
-    p = float(model.predict_proba(pd.DataFrame([feats])[LINEUP_FEATURES])[0, 1])
+    feats["rapm_diff"] = lineups["home"][2] - lineups["away"][2]
+    model = make_model("logistic").fit(games[IMPACT_FEATURES], games["home_win"])
+    p = float(model.predict_proba(pd.DataFrame([feats])[IMPACT_FEATURES])[0, 1])
     print(f"{home} (home) vs {away}: {home} {p:.0%}, {away} {1 - p:.0%}")
     print(f"  Elo {state.elo[home]:.0f} vs {state.elo[away]:.0f}, "
           f"last-10 margin difference {feats['form_diff']:+.1f}, "
-          f"lineup strength {lineups['home'][0]:.0f} vs {lineups['away'][0]:.0f}")
+          f"lineup strength {lineups['home'][0]:.0f} vs {lineups['away'][0]:.0f}, "
+          f"lineup impact {lineups['home'][2]:+.1f} vs {lineups['away'][2]:+.1f} per 100 possessions")
     for side, team in (("home", home), ("away", away)):
         top = lineups[side][1].head(5)
         print(f"  {team} top players counted: {', '.join(top['player'])}")

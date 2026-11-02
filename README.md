@@ -26,7 +26,7 @@ Download the Kaggle dataset [NBA Stats (1947-present)](https://www.kaggle.com/da
 kaggle datasets download sumitrodatta/nba-aba-baa-stats -f Advanced.csv -p data --unzip
 ```
 
-Play-by-play and shot charts come from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. Game predictions and play-by-play style use these files. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season).
+Play-by-play and shot charts come from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. Game predictions, player impact and play-by-play style use these files. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season). The 2025-26 play-by-play only exists there in the cdn.nba.com format, so it is converted to the stats.nba.com layout on download. On 2024-25, where both formats exist, the converted data gives the same final score in 1,229 of 1,230 games and box-score totals within 0.3%.
 
 ## Statistical twins
 
@@ -140,7 +140,7 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 
 ### Method
 
-1. **Games**: final scores are the highest score reached in each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2024-25 (15,665 games).
+1. **Games**: final scores are the highest score reached in each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2025-26 (16,895 games).
 2. **Pre-game features**, computed only from earlier games:
     - **Elo** with a margin-of-victory multiplier and 25% regression to the mean between seasons, as in FiveThirtyEight's model. Its 100-point home edge is lowered to 60, because home teams win less often than they used to (about 59% of games until 2018-19, about 55% since).
     - **Form**: average margin over each team's last 10 games
@@ -153,8 +153,8 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 ### Usage
 
 ```bash
-basketball-ml predict OKC DEN                 # OKC (home) vs DEN: OKC 78%, DEN 22%
-basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops to 70%
+basketball-ml predict SAS OKC                 # SAS (home) vs OKC: SAS 55%, OKC 45%
+basketball-ml predict SAS OKC --out-home "Victor Wembanyama"   # SAS drops to 43%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
 basketball-ml games-backtest --calibration docs/calibration.png      # walk-forward evaluation
@@ -162,19 +162,18 @@ basketball-ml games-backtest --calibration docs/calibration.png      # walk-forw
 
 ### Backtest
 
-Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted by a model trained only on the seasons before it:
+Out of sample from 2017-18 to 2025-26 (10,746 games), with each season predicted by a model trained only on the seasons before it:
 
 | Model | Accuracy | Log loss | Brier score |
 | --- | --- | --- | --- |
-| Always the home team | 56.0% | 0.687 | 0.247 |
-| Elo alone | 64.6% | 0.626 | 0.218 |
-| Logistic regression, without lineups | 65.1% | 0.623 | 0.217 |
-| Logistic regression, with lineup strength | 65.7% | 0.616 | 0.214 |
-| Logistic regression, with lineup strength and impact from previous seasons | 66.3% | 0.611 | 0.212 |
-| **Logistic regression, with impact ratings refreshed monthly** | **66.6%** | **0.610** | **0.211** |
-| Gradient boosting, same features | 66.2% | 0.613 | 0.212 |
+| Always the home team | 55.9% | 0.687 | 0.247 |
+| Elo alone | 65.1% | 0.622 | 0.217 |
+| Logistic regression, without lineups | 65.6% | 0.620 | 0.216 |
+| Logistic regression, with lineup strength | 66.2% | 0.612 | 0.212 |
+| **Logistic regression, with lineup strength and impact** | **66.9%** | **0.607** | **0.210** |
+| Gradient boosting, same features | 66.6% | 0.610 | 0.211 |
 
-Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6139, both 0.6100. Refreshing ratings during the season lets rookies and players whose role changed move away from last season's value (or the rookie default) instead of keeping it all year. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
+Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6113, both 0.6068. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (69.4% accuracy, log loss 0.582), and 2020-21 the least (64.2%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used.
 
 ### Calibration
 
@@ -182,7 +181,7 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.6 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.1 points but barely moved the log loss (0.6100 to 0.6090), so it isn't used.
+Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6068 to 0.6061), so it isn't used.
 
 ## Play-by-play style
 
@@ -239,7 +238,7 @@ How many points does a player add to his team per 100 possessions, once you acco
 ### Method
 
 1. **Who is on the court.** The play-by-play lists substitutions but not who starts each quarter, so the starters of a quarter are the players whose first appearance in it isn't being subbed in. This works for 99.7% of quarters; the rest (a player who never touches the ball for a whole quarter) are skipped. Events are kept in file order, because event numbers are often out of order around substitutions.
-2. **Stints.** Each stretch with the same ten players gives the points each team scored and its possessions (`FGA + 0.44 FTA - OREB + TOV`). That's 772,000 stints from 2012-13 to 2024-25.
+2. **Stints.** Each stretch with the same ten players gives the points each team scored and its possessions (`FGA + 0.44 FTA - OREB + TOV`). That's 853,000 stints from 2012-13 to 2025-26.
 3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward average, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
 4. **Tuning.** The shrinkage (`alpha = 4000`), the window and the rating of unrated players (rookies, -1.5) were chosen on 2015-16 to 2018-19 only, by how well each season's ratings explain the next season's game margins.
 
@@ -252,35 +251,35 @@ basketball-ml impact --season 2016 --top 5
 basketball-ml impact-backtest             # RAPM vs simpler ratings, season by season
 ```
 
-2023-24 and 2024-25, players with 3,000+ offensive possessions:
+2024-25 and 2025-26, players with 3,000+ offensive possessions:
 
 | | Player | Offense | Defense | RAPM |
 | --- | --- | --- | --- | --- |
-| 1 | Shai Gilgeous-Alexander | +4.9 | +2.1 | +7.0 |
-| 2 | Nikola Jokić | +6.4 | +0.5 | +7.0 |
-| 3 | Giannis Antetokounmpo | +4.4 | +1.0 | +5.4 |
-| 4 | Luka Dončić | +3.8 | +0.8 | +4.6 |
-| 5 | Kawhi Leonard | +3.1 | +1.4 | +4.6 |
-| 6 | Herbert Jones | +1.5 | +3.0 | +4.5 |
-| 7 | Franz Wagner | +1.6 | +2.8 | +4.4 |
-| 8 | Dorian Finney-Smith | +2.3 | +2.1 | +4.4 |
-| 9 | Dean Wade | +1.4 | +2.8 | +4.1 |
-| 10 | Draymond Green | +1.2 | +2.7 | +4.0 |
+| 1 | Shai Gilgeous-Alexander | +5.7 | +2.1 | +7.8 |
+| 2 | Victor Wembanyama | +2.2 | +4.3 | +6.5 |
+| 3 | Nikola Jokić | +6.3 | +0.1 | +6.4 |
+| 4 | Giannis Antetokounmpo | +4.4 | +1.2 | +5.6 |
+| 5 | Kawhi Leonard | +4.1 | +1.5 | +5.5 |
+| 6 | Derrick White | +2.0 | +3.0 | +5.0 |
+| 7 | Chet Holmgren | +1.7 | +3.3 | +5.0 |
+| 8 | Ausar Thompson | +1.7 | +2.7 | +4.4 |
+| 9 | Amen Thompson | +2.1 | +2.1 | +4.2 |
+| 10 | Alex Caruso | +1.0 | +3.2 | +4.2 |
 
-The 2014-15 and 2015-16 top 5 is Draymond Green, Stephen Curry, LeBron James, Kawhi Leonard and Chris Paul. Defensive specialists (Herbert Jones, Dean Wade, Alex Caruso) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
+The 2014-15 and 2015-16 top 5 is Draymond Green, Stephen Curry, LeBron James, Kawhi Leonard and Chris Paul. Defensive specialists (Ausar Thompson, Alex Caruso, Derrick White) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
 
 ### Does it work?
 
-Ratings from the two previous seasons, applied to the players actually on the court in each stint, explain this share of the variance of every game's final margin (2015-16 to 2024-25, about 12,000 games):
+Ratings from the two previous seasons, applied to the players actually on the court in each stint, explain this share of the variance of every game's final margin (2015-16 to 2025-26, 13,206 games):
 
 | Rating | Margin explained |
 | --- | --- |
-| **RAPM** | **14.7%** |
-| Box-score production per game | 11.7% |
-| Adjusted plus-minus without shrinkage | 11.5% |
-| Raw on-court net rating | 11.4% |
+| **RAPM** | **14.6%** |
+| Box-score production per game | 12.0% |
+| Raw on-court net rating | 11.3% |
+| Adjusted plus-minus without shrinkage | 11.1% |
 
-RAPM is the best rating in 8 of the 10 seasons (it ties raw net rating in 2015-16, and box-score production wins the odd 2020-21 season, played mostly without fans). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 66.6%.
+RAPM is the best rating in 8 of the 11 seasons. It ties raw net rating in 2015-16, and box-score production wins 2020-21 (played mostly without fans) and 2025-26. Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 66.9%.
 
 ## Project layout
 

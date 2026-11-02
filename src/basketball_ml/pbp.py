@@ -2,7 +2,9 @@
 
 Source: the public GitHub repository ``shufinskiy/nba_data``, which mirrors
 stats.nba.com play-by-play (since 1996-97) and shot charts as one
-``.tar.xz`` archive per season.
+``.tar.xz`` archive per season. Seasons missing from its stats.nba.com
+play-by-play (2025-26 so far) are read from its copy of the cdn.nba.com feed
+and converted to the same columns.
 
 Seasons are named by the year they end, like everywhere else in this
 package: ``2025`` is the 2024-25 season.
@@ -12,13 +14,15 @@ from __future__ import annotations
 
 import io
 import tarfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 BASE_URL = "https://raw.githubusercontent.com/shufinskiy/nba_data/main/datasets"
-KINDS = ("nbastats", "shotdetail")
+KINDS = ("nbastats", "shotdetail", "cdnnba")
 
 PBP_COLUMNS = [
     "GAME_ID", "EVENTNUM", "EVENTMSGTYPE", "EVENTMSGACTIONTYPE", "PERIOD", "PCTIMESTRING",
@@ -30,6 +34,7 @@ PBP_COLUMNS = [
 
 # stats.nba.com EVENTMSGTYPE codes
 MADE_SHOT, MISSED_SHOT, FREE_THROW, REBOUND, TURNOVER, FOUL = 1, 2, 3, 4, 5, 6
+VIOLATION, SUBSTITUTION, TIMEOUT, JUMP_BALL, EJECTION, PERIOD_START, PERIOD_END = 7, 8, 9, 10, 11, 12, 13
 
 
 def _archive_name(kind: str, season: int, playoffs: bool) -> str:
@@ -62,10 +67,138 @@ def download(kind: str, season: int, data_dir: str | Path = "data/pbp", playoffs
 
 def load_pbp(season: int, data_dir: str | Path = "data/pbp", playoffs: bool = False) -> pd.DataFrame:
     """Play-by-play events for one season (downloaded on first use)."""
-    path = download("nbastats", season, data_dir, playoffs)
+    converted = Path(data_dir) / f"{_archive_name('nbastats', season, playoffs)}_from_cdn.csv"
+    if converted.exists():
+        path = converted
+    else:
+        try:
+            path = download("nbastats", season, data_dir, playoffs)
+        except urllib.error.HTTPError as err:
+            if err.code != 404:
+                raise
+            cdn = pd.read_csv(download("cdnnba", season, data_dir, playoffs), low_memory=False)
+            events = from_cdn(cdn)
+            # The cdn feed only has short names ("S. Gilgeous-Alexander"): take full ones from the shot charts.
+            shots = load_shots(season, data_dir, playoffs)
+            full = shots.drop_duplicates("PLAYER_ID").set_index("PLAYER_ID")["PLAYER_NAME"]
+            for i in (1, 2, 3):
+                ids = events[f"PLAYER{i}_ID"]
+                events[f"PLAYER{i}_NAME"] = ids.map(full).fillna(events[f"PLAYER{i}_NAME"])
+            events.to_csv(converted, index=False)
+            path = converted
     df = pd.read_csv(path, usecols=lambda c: c in PBP_COLUMNS, low_memory=False)
     df["season"] = season
     return df
+
+
+CDN_TYPES = {"freethrow": FREE_THROW, "rebound": REBOUND, "turnover": TURNOVER, "foul": FOUL,
+             "violation": VIOLATION, "substitution": SUBSTITUTION, "timeout": TIMEOUT, "jumpball": JUMP_BALL,
+             "ejection": EJECTION}
+
+
+def _cdn_clock(clock: pd.Series) -> pd.Series:
+    """"PT11M36.00S" -> "11:36"."""
+    parts = clock.str.extract(r"PT(\d+)M(\d+)")
+    return parts[0].astype(int).astype(str) + ":" + parts[1].str.zfill(2)
+
+
+def _cdn_action_type(d: pd.DataFrame) -> pd.Series:
+    """The stats.nba.com action types the package relies on (bad passes, technical fouls)."""
+    sub = d["subType"].fillna("").str.lower()
+    desc = d["descriptor"].fillna("").str.lower() if "descriptor" in d else pd.Series("", index=d.index)
+    text = d["description"].fillna("").str.lower()
+    out = np.zeros(len(d), dtype=int)
+    turnover, foul = d["actionType"] == "turnover", d["actionType"] == "foul"
+    out[(turnover & (sub == "bad pass")).to_numpy()] = 1
+    out[(turnover & (sub == "out-of-bounds") & (desc.str.contains("bad pass") | text.str.contains("bad pass"))).to_numpy()] = 45
+    out[(foul & (sub == "personal")).to_numpy()] = 1
+    out[(foul & (desc == "shooting")).to_numpy()] = 2
+    out[(foul & (sub == "technical")).to_numpy()] = 11
+    out[(foul & (sub == "technical") & (desc == "defensive-3-second")).to_numpy()] = 17
+    return pd.Series(out, index=d.index)
+
+
+def from_cdn(cdn: pd.DataFrame) -> pd.DataFrame:
+    """Convert cdn.nba.com play-by-play to the stats.nba.com columns used in this package.
+
+    Steals, blocks and assists become the second and third players of the
+    turnover, missed shot or made shot they belong to; each substitution's
+    "out" and "in" rows become one event; scores are written only where they
+    change; descriptions go to the home or visitor column by team.
+    """
+    d = cdn.sort_values(["gameId", "orderNumber"], kind="stable").reset_index(drop=True)
+    for col in ("personId", "assistPersonId", "stealPersonId", "blockPersonId", "foulDrawnPersonId",
+                "jumpBallWonPersonId", "jumpBallLostPersonId", "jumpBallRecoverdPersonId", "teamId"):
+        if col in d:
+            d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0).astype(np.int64)
+    team_of = d[d["personId"] > 0].drop_duplicates(["gameId", "personId"]).set_index(
+        ["gameId", "personId"])["teamTricode"]
+    name_of = d[d["personId"] > 0].drop_duplicates(["gameId", "personId"]).set_index(
+        ["gameId", "personId"])["playerNameI"]
+
+    # Home team: the one whose made baskets raise scoreHome.
+    score_home = pd.to_numeric(d["scoreHome"], errors="coerce")
+    raised = score_home.groupby(d["gameId"]).diff().fillna(score_home) > 0
+    home = d[raised & d["teamTricode"].notna()].groupby("gameId")["teamTricode"].agg(lambda s: s.mode().iat[0])
+
+    # Substitutions: pair the i-th "out" with the i-th "in" of the same team at the same moment.
+    subs = d[d["actionType"] == "substitution"].copy()
+    subs["slot"] = subs.groupby(["gameId", "period", "clock", "teamTricode", "subType"]).cumcount()
+    key = ["gameId", "period", "clock", "teamTricode", "slot"]
+    pairs = subs[subs["subType"] == "out"].reset_index().merge(
+        subs[subs["subType"] == "in"][[*key, "personId"]].rename(columns={"personId": "inId"}), on=key, how="left")
+    sub_in = pairs.set_index("index")["inId"].fillna(0).astype(np.int64)
+
+    keep = ~d["actionType"].isin(["steal", "block", "heave", "game"]) & ~(
+        (d["actionType"] == "substitution") & (d["subType"] != "out"))
+    d = d[keep].copy()
+
+    kind = d["actionType"].map(CDN_TYPES)
+    shot = d["actionType"].isin(["2pt", "3pt"])
+    kind[shot] = np.where(d.loc[shot, "shotResult"] == "Made", MADE_SHOT, MISSED_SHOT)
+    kind[(d["actionType"] == "period") & (d["subType"] == "start")] = PERIOD_START
+    kind[(d["actionType"] == "period") & (d["subType"] == "end")] = PERIOD_END
+    d = d[kind.notna()].copy()
+    kind = kind[kind.notna()].astype(int)
+
+    p1 = d["personId"].where(d["personId"] > 0, d["teamId"])
+    p2 = pd.Series(0, index=d.index, dtype=np.int64)
+    p3 = pd.Series(0, index=d.index, dtype=np.int64)
+    p2[kind == MADE_SHOT] = d.loc[kind == MADE_SHOT, "assistPersonId"]
+    p3[kind == MISSED_SHOT] = d.loc[kind == MISSED_SHOT, "blockPersonId"]
+    p2[kind == TURNOVER] = d.loc[kind == TURNOVER, "stealPersonId"]
+    p2[kind == FOUL] = d.loc[kind == FOUL, "foulDrawnPersonId"]
+    is_sub = kind == SUBSTITUTION
+    p2[is_sub] = sub_in.reindex(d.index[is_sub]).fillna(0).astype(np.int64).to_numpy()
+    jump = kind == JUMP_BALL
+    if "jumpBallWonPersonId" in d:
+        p1[jump] = d.loc[jump, "jumpBallWonPersonId"]
+        p2[jump] = d.loc[jump, "jumpBallLostPersonId"]
+        p3[jump] = d.loc[jump, "jumpBallRecoverdPersonId"]
+
+    def team(ids: pd.Series) -> pd.Series:
+        return pd.Series(team_of.reindex(pd.MultiIndex.from_arrays([d["gameId"], ids])).to_numpy(), index=d.index)
+
+    def name(ids: pd.Series) -> pd.Series:
+        return pd.Series(name_of.reindex(pd.MultiIndex.from_arrays([d["gameId"], ids])).to_numpy(), index=d.index)
+
+    home_team = d["gameId"].map(home)
+    description = d["description"]
+    score = pd.to_numeric(d["scoreAway"], errors="coerce").astype("Int64").astype(str) + " - " + \
+        pd.to_numeric(d["scoreHome"], errors="coerce").astype("Int64").astype(str)
+    changed = score != score.groupby(d["gameId"]).shift().fillna("0 - 0")
+    margin = pd.to_numeric(d["scoreHome"], errors="coerce") - pd.to_numeric(d["scoreAway"], errors="coerce")
+    out = pd.DataFrame({
+        "GAME_ID": d["gameId"], "EVENTNUM": d["actionNumber"], "EVENTMSGTYPE": kind,
+        "EVENTMSGACTIONTYPE": _cdn_action_type(d), "PERIOD": d["period"], "PCTIMESTRING": _cdn_clock(d["clock"]),
+        "HOMEDESCRIPTION": description.where(d["teamTricode"] == home_team),
+        "VISITORDESCRIPTION": description.where(d["teamTricode"].notna() & (d["teamTricode"] != home_team)),
+        "SCORE": score.where(changed), "SCOREMARGIN": margin.where(changed),
+        "PLAYER1_ID": p1, "PLAYER1_NAME": name(p1), "PLAYER1_TEAM_ABBREVIATION": team(p1),
+        "PLAYER2_ID": p2, "PLAYER2_NAME": name(p2), "PLAYER2_TEAM_ABBREVIATION": team(p2),
+        "PLAYER3_ID": p3, "PLAYER3_NAME": name(p3), "PLAYER3_TEAM_ABBREVIATION": team(p3),
+    })
+    return out.reset_index(drop=True)
 
 
 def load_shots(season: int, data_dir: str | Path = "data/pbp", playoffs: bool = False) -> pd.DataFrame:

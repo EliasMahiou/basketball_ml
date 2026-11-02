@@ -16,7 +16,7 @@ from .stints import build_stints
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--data-dir", default="data/pbp", help="Where play-by-play files are cached")
     p.add_argument("--first-season", type=int, default=2013, help="First season loaded (end year)")
-    p.add_argument("--last-season", type=int, default=2025, help="Last season loaded (end year)")
+    p.add_argument("--last-season", type=int, default=2026, help="Last season loaded (end year)")
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

@@ -9,7 +9,7 @@ import pandas as pd
 from ..data import FEATURES, load_advanced
 from ..twins.similarity import resolve_player, standardize_by_season
 from .backtest import backtest, score
-from .comparables import build_pairs, project_season, projection_range
+from .comparables import add_history, build_pairs, project_season, projection_range
 
 SHOWN = ["bpm", "obpm", "dbpm", "ts_percent", "usg_percent", "ast_percent", "x3p_ar"]
 LABELS = {**FEATURES, "bpm": "BPM"}
@@ -19,6 +19,7 @@ def _load(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
     seasons = load_advanced(args.data, min_minutes=args.min_minutes)
     if args.last_complete_season:
         seasons = seasons[seasons["season"] <= args.last_complete_season]
+    seasons = add_history(seasons)
     return seasons, standardize_by_season(seasons)
 
 
@@ -28,6 +29,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--min-minutes", type=int, default=500, help="Minimum minutes per season")
     p.add_argument("--last-complete-season", type=int, default=None,
                    help="Ignore seasons after this one (e.g. a season still in progress)")
+    p.add_argument("--history-weight", type=float, default=0.5,
+                   help="How much the starting point leans on the 3-season average (0 = current season only)")
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -59,8 +62,9 @@ def run_project(args: argparse.Namespace) -> None:
     ranges = {}
     for h in range(1, args.years + 1):
         pairs = build_pairs(seasons, z, horizon=h)
-        proj, comps = project_season(target_z, target_raw, pairs, horizon=h, k=args.k)
-        rng = projection_range(comps, target_raw)
+        proj, comps = project_season(target_z, target_raw, pairs, horizon=h, k=args.k,
+                                     history_weight=args.history_weight)
+        rng = projection_range(comps, target_raw, history_weight=args.history_weight)
         s = season + h
         table[f"{s - 1}-{str(s)[-2:]} (projected)"] = proj[SHOWN]
         ranges[f"{s - 1}-{str(s)[-2:]}"] = rng.loc["bpm"]
@@ -83,7 +87,8 @@ def run_project(args: argparse.Namespace) -> None:
 def run_backtest(args: argparse.Namespace) -> None:
     seasons, z = _load(args)
     pairs = build_pairs(seasons, z, horizon=args.horizon)
-    results = backtest(pairs, range(args.from_season, args.to_season + 1), horizon=args.horizon, k=args.k)
+    results = backtest(pairs, range(args.from_season, args.to_season + 1), horizon=args.horizon, k=args.k,
+                       history_weight=args.history_weight)
     print(f"{len(results)} player-seasons projected {args.horizon} season(s) ahead, "
           f"{args.from_season} to {args.to_season}. Mean absolute error:\n")
     print(score(results).rename(index=LABELS).round(4).to_string())

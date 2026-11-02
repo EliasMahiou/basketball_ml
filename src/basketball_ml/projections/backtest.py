@@ -16,6 +16,8 @@ def backtest(
     horizon: int = 1,
     k: int = 25,
     targets: Sequence[str] = TARGETS,
+    match: Sequence[str] | None = None,
+    history_weight: float = 0.0,
 ) -> pd.DataFrame:
     """Project every player-season in ``seasons`` and compare with what happened.
 
@@ -32,12 +34,17 @@ def backtest(
         curve = age_curve(history, targets)
         for _, target in pairs[pairs["season"] == season].iterrows():
             raw_now = pd.Series({t: target[f"{t}_now"] for t in targets})
+            for t in targets:
+                if f"{t}_hist" in target:
+                    raw_now[f"{t}_hist"] = target[f"{t}_hist"]
             try:
-                proj, comps = project_season(target, raw_now, history, horizon=horizon, k=k, targets=targets)
+                proj, comps = project_season(target, raw_now, history, horizon=horizon, k=k, targets=targets,
+                                             history_weight=history_weight,
+                                             **({"match": match} if match is not None else {}))
             except ValueError:
                 continue
             row = {"player": target["player"], "season": season, "age": target["age"]}
-            rng = projection_range(comps, raw_now, targets)
+            rng = projection_range(comps, raw_now, targets, history_weight=history_weight)
             age_delta = curve.loc[target["age"]] if target["age"] in curve.index else None
             for t in targets:
                 row[f"{t}_actual"] = target[f"{t}_later"]

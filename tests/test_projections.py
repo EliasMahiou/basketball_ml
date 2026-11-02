@@ -71,3 +71,26 @@ def test_backtest_reports_range_coverage():
     table = score(backtest(pairs, range(2006, 2010), k=5))
     assert "range_80_coverage" in table.columns
     assert table.loc["bpm", "range_80_coverage"] == 1.0
+
+
+def test_add_history_weights_recent_seasons_and_minutes():
+    from basketball_ml.projections import add_history
+    seasons = pd.DataFrame({"player_id": ["a", "a", "a"], "season": [2001, 2002, 2003],
+                            "mp": [1000.0, 1000.0, 2000.0], "bpm": [0.0, 3.0, 6.0]})
+    h = add_history(seasons, targets=["bpm"])
+    # 2003: (5*2000*6 + 4*1000*3 + 3*1000*0) / (5*2000 + 4*1000 + 3*1000)
+    assert np.isclose(h.loc[2, "bpm_hist"], (60000 + 12000) / 17000)
+    assert h.loc[0, "bpm_hist"] == 0.0
+
+
+def test_history_weight_moves_the_starting_point():
+    from basketball_ml.projections import add_history
+    seasons = add_history(_fake_league())
+    z = standardize_by_season(seasons)
+    pairs = build_pairs(seasons, z)
+    tz = z[(z.player_id == "p0") & (z.season == 2006)].iloc[0]
+    raw = seasons[(seasons.player_id == "p0") & (seasons.season == 2006)].iloc[0]
+    now, _ = project_season(tz, raw, pairs, k=5, history_weight=0.0)
+    mixed, _ = project_season(tz, raw, pairs, k=5, history_weight=0.5)
+    # BPM rises every season, so the 3-season average sits below the current value.
+    assert mixed["bpm"] < now["bpm"]

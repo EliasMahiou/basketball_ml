@@ -30,16 +30,18 @@ TEAM_ALIASES = {"NOH": "NOP", "NJN": "BKN", "CHH": "CHA", "SEA": "OKC", "VAN": "
 def build_games(seasons: Iterable[int], data_dir: str | Path = "data/pbp") -> pd.DataFrame:
     """One row per regular-season game: date, teams and final score.
 
-    The final score comes from the last scoring event in the play-by-play
-    (``SCORE`` reads "visitor - home"); date and teams come from the shot charts.
+    The final score is the highest score reached in the play-by-play
+    (``SCORE`` reads "visitor - home"; event numbers aren't always in game
+    order, so the last-numbered event can be an earlier score). Date and
+    teams come from the shot charts.
     """
     frames = []
     for season in seasons:
         events = pbp.load_pbp(season, data_dir)
-        scored = events.dropna(subset=["SCORE"]).sort_values(["GAME_ID", "PERIOD", "EVENTNUM"])
-        final = scored.groupby("GAME_ID").tail(1)[["GAME_ID", "SCORE"]]
-        pts = final["SCORE"].str.split(" - ", expand=True).astype(int)
-        final = final.assign(away_pts=pts[0].to_numpy(), home_pts=pts[1].to_numpy()).drop(columns="SCORE")
+        scored = events.dropna(subset=["SCORE"])
+        pts = scored["SCORE"].str.split(" - ", expand=True).astype(int)
+        final = (pd.DataFrame({"GAME_ID": scored["GAME_ID"], "away_pts": pts[0], "home_pts": pts[1]})
+                 .groupby("GAME_ID", as_index=False).max())
 
         shots = pbp.load_shots(season, data_dir)
         info = shots.groupby("GAME_ID").agg(date=("GAME_DATE", "first"), home=("HTM", "first"),

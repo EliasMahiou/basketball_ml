@@ -20,6 +20,9 @@ ROLLING_GAMES = 10
 MAX_REST = 4
 
 FEATURES = ["elo_diff", "form_diff", "season_diff", "rest_diff", "b2b_home", "b2b_away"]
+LINEUP_FEATURES = [*FEATURES, "strength_diff"]
+
+TEAM_ALIASES = {"NOH": "NOP", "NJN": "BKN", "CHH": "CHA", "SEA": "OKC", "VAN": "MEM"}
 
 
 def build_games(seasons: Iterable[int], data_dir: str | Path = "data/pbp") -> pd.DataFrame:
@@ -40,6 +43,7 @@ def build_games(seasons: Iterable[int], data_dir: str | Path = "data/pbp") -> pd
         info = shots.groupby("GAME_ID").agg(date=("GAME_DATE", "first"), home=("HTM", "first"),
                                             away=("VTM", "first")).reset_index()
         games = info.merge(final, on="GAME_ID")
+        games[["home", "away"]] = games[["home", "away"]].replace(TEAM_ALIASES)
         games["date"] = pd.to_datetime(games["date"].astype(str), format="%Y%m%d")
         games["season"] = season
         frames.append(games)

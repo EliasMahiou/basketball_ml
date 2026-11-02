@@ -145,12 +145,14 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
     - **Form**: average margin over each team's last 10 games
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
+    - **Lineup strength**: who actually played. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games. A team's strength is the sum over its 10 best players in the game. Who plays is known shortly before tip-off from injury reports, so the backtest treats it as known.
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
 
 ```bash
-basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 66%, BOS 34%
+basketball-ml predict OKC BOS                 # OKC (home) vs BOS: OKC 65%, BOS 35%
+basketball-ml predict OKC DEN --out-home "Shai Gilgeous-Alexander"   # OKC drops from 74% to 69%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
 basketball-ml games-backtest                  # walk-forward evaluation
@@ -164,10 +166,11 @@ Out of sample from 2017-18 to 2024-25 (9,516 games), with each season predicted 
 | --- | --- | --- | --- |
 | Always the home team | 56.0% | 0.687 | 0.247 |
 | Elo alone | 64.4% | 0.635 | 0.222 |
-| **Logistic regression** | **65.1%** | **0.624** | **0.217** |
-| Gradient boosting | 64.7% | 0.627 | 0.219 |
+| Logistic regression, without lineups | 65.1% | 0.624 | 0.217 |
+| **Logistic regression** | **65.8%** | **0.616** | **0.214** |
+| Gradient boosting | 65.7% | 0.619 | 0.215 |
 
-Lower log loss and Brier score are better. Injuries and lineups are not used yet, and they are the main gap with professional models.
+Lower log loss and Brier score are better. Lineup strength is the biggest single gain after Elo. A "missing production" feature (the summed production of regulars who sat out) helped less (log loss 0.619) and added nothing on top of lineup strength, so it isn't used.
 
 ## Play-by-play style
 
@@ -234,6 +237,7 @@ src/basketball_ml/
 │   └── cli.py         # basketball-ml project / backtest
 ├── predictions/
 │   ├── games.py       # game results, Elo and pre-game features
+│   ├── availability.py # who played in each game and lineup strength
 │   ├── model.py       # win-probability models and walk-forward evaluation
 │   └── cli.py         # basketball-ml predict / ratings / games-backtest
 └── embeddings/
@@ -254,5 +258,5 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **Injuries and lineups** in game predictions, from who actually played in each game.
+- **Player impact** in game predictions: replace the box-score production sum with an on/off or RAPM-style rating learned from the play-by-play.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

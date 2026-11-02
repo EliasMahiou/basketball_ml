@@ -66,3 +66,41 @@ def test_walk_forward_learns_the_strong_team():
     table = evaluate(results)
     assert table.loc["logistic", "accuracy"] > table.loc["home_court", "accuracy"]
     assert set(FEATURES) <= set(games.columns)
+
+
+def _fake_appearances(games):
+    """AAA's star (id 1, 30 per game) sits out every 4th AAA game."""
+    rows, aaa_games = [], 0
+    for g in games.itertuples(index=False):
+        for team in (g.home, g.away):
+            base = {"AAA": 100, "BBB": 200, "CCC": 300, "DDD": 400}[team]
+            players = [base + i for i in range(2, 8)]
+            if team == "AAA":
+                aaa_games += 1
+                if aaa_games % 4:
+                    players.append(1)
+            for pid in players:
+                rows.append({"season": g.season, "game_id": g.game_id, "team": team, "player_id": pid,
+                             "player": f"P{pid}", "production": 30.0 if pid == 1 else 10.0})
+    return pd.DataFrame(rows)
+
+
+def test_availability_sees_the_missing_star():
+    from basketball_ml.predictions import add_availability
+    games, _ = add_features(_fake_games(1))
+    out = add_availability(games, _fake_appearances(games))
+    aaa_home = out[out.home == "AAA"].iloc[10:]
+    lineup = _fake_appearances(games)
+    star_out = ~aaa_home.game_id.isin(lineup[lineup.player_id == 1].game_id)
+    assert (aaa_home.loc[star_out, "missing_home"] >= 30).all()
+    assert (aaa_home.loc[~star_out, "strength_home"] > aaa_home.loc[star_out, "strength_home"].max()).all()
+
+
+def test_expected_lineup_drops_players_marked_out():
+    from basketball_ml.predictions import expected_lineup
+    games, _ = add_features(_fake_games(1))
+    apps = _fake_appearances(games)
+    full, players = expected_lineup(apps, games, "AAA")
+    without, _ = expected_lineup(apps, games, "AAA", out=["P1"])
+    assert "P1" in set(players["player"])
+    assert np.isclose(full - without, 30.0)

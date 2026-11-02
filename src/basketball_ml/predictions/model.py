@@ -12,7 +12,7 @@ from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from .games import FEATURES
+from .games import FEATURES, LINEUP_FEATURES
 
 METHODS = ("home_court", "elo", "logistic", "boosting")
 
@@ -27,13 +27,18 @@ def make_model(method: str):
     raise ValueError(f"No trainable model for {method!r}")
 
 
+def default_features(games: pd.DataFrame) -> list[str]:
+    """Lineup-aware features when ``strength_diff`` is available, else the base set."""
+    return list(LINEUP_FEATURES) if "strength_diff" in games else list(FEATURES)
+
+
 def walk_forward(games: pd.DataFrame, test_seasons: Iterable[int],
-                 methods: Sequence[str] = METHODS, features: Sequence[str] = FEATURES) -> pd.DataFrame:
+                 methods: Sequence[str] = METHODS, features: Sequence[str] | None = None) -> pd.DataFrame:
     """Predict each test season with models trained only on earlier seasons.
 
     Returns the test games with one ``p_<method>`` column (home win probability) per method.
     """
-    feats = list(features)
+    feats = list(features) if features is not None else default_features(games)
     out = []
     for season in test_seasons:
         train = games[games["season"] < season]

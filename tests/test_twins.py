@@ -56,3 +56,10 @@ def test_resolve_player():
     assert resolve_player(df, "player 3") == "p3"
     with pytest.raises(KeyError):
         resolve_player(df, "Nobody")
+
+
+def test_resolve_player_ignores_accents():
+    df = _fake_seasons()
+    df.loc[df.player_id == "p7", "player"] = "Nikola Jokić"
+    assert resolve_player(df, "nikola jokic") == "p7"
+    assert resolve_player(df, "Jokic") == "p7"

@@ -11,6 +11,7 @@ How it works:
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
 
 import numpy as np
@@ -53,14 +54,23 @@ def similarity_score(distance: np.ndarray, n_features: int) -> np.ndarray:
     return 100.0 * np.exp(-distance / np.sqrt(n_features))
 
 
-def resolve_player(table: pd.DataFrame, name: str) -> str:
-    """Find the ``player_id`` for a name (case-insensitive).
+def _normalize(name: str) -> str:
+    """Lowercase and strip accents: "Jokić" -> "jokic"."""
+    decomposed = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).lower().strip()
 
-    When several players share the name, pick the one with the most minutes.
+
+def resolve_player(table: pd.DataFrame, name: str) -> str:
+    """Find the ``player_id`` for a name (case- and accent-insensitive).
+
+    "nikola jokic" matches "Nikola Jokić". When several players share the
+    name, pick the one with the most minutes.
     """
-    hits = table[table["player"].str.lower() == name.lower()]
+    names = table["player"].map(_normalize)
+    query = _normalize(name)
+    hits = table[names == query]
     if hits.empty:
-        hits = table[table["player"].str.lower().str.contains(name.lower(), regex=False)]
+        hits = table[names.str.contains(query, regex=False)]
     if hits.empty:
         raise KeyError(f"Player not found: {name!r}")
     return hits.groupby("player_id")["mp"].sum().idxmax()

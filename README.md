@@ -5,7 +5,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | Module | Status | What it does |
 | --- | --- | --- |
 | [`twins`](#statistical-twins) | Ready | Finds a player's "statistical twin" for a season or a whole career, across every era |
-| `projections` | Planned | Projects a player's next seasons from what his twins did at the same age |
+| [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | `predictions` | Planned | Predicts game outcomes |
 
 ## Installation
@@ -70,16 +70,66 @@ careers = career_profiles(z)
 find_twins(careers, resolve_player(careers, "Victor Wembanyama"), k=5)
 ```
 
+## Career projections
+
+To project a player, look at the players who looked most like him at the same age and see what they did next.
+
+### Method
+
+1. **Comparables**: the 50 player-seasons closest to the target season (same z-score profile as the twins module), among players of the **same age** whose later season is already known. Only seasons that ended before the target season can be used, so nothing leaks from the future.
+2. **What happened next**: for each comparable, the raw change of each stat between that season and the one `h` years later (for example +1.2 BPM).
+3. **Projection**: the target's current value plus the similarity-weighted average of those changes, for 1 to `h` seasons ahead.
+
+### Usage
+
+```bash
+# Next three seasons (--last-complete-season skips a season still in progress)
+basketball-ml project "Victor Wembanyama" --last-complete-season 2025
+
+# Backtest against simple baselines
+basketball-ml backtest --last-complete-season 2025
+```
+
+```
+Victor Wembanyama, age 21 in 2024-25
+
+          2024-25 (actual)  2025-26 (projected)  2026-27 (projected)  2027-28 (projected)
+BPM                  6.500                6.904                7.510                7.928
+OBPM                 3.600                4.057                4.490                4.669
+DBPM                 2.900                2.864                3.033                3.266
+TS%                  0.594                0.601                0.608                0.615
+USG%                30.400               31.144               31.983               31.598
+```
+
+### Backtest
+
+Each of the 3,958 player-seasons from 2010-11 to 2024-25 was projected one season ahead and compared with what actually happened. The comparables beat both baselines on all 13 stats. The baselines are "no change", which repeats the current season, and the "age curve", which adds the average change for that age.
+
+| Mean absolute error | Comparables | Age curve | No change |
+| --- | --- | --- | --- |
+| BPM | **1.37** | 1.43 | 1.47 |
+| OBPM | **1.16** | 1.21 | 1.25 |
+| DBPM | **0.64** | 0.66 | 0.66 |
+| TS% | **0.0315** | 0.0335 | 0.0337 |
+| USG% | **2.10** | 2.14 | 2.19 |
+| AST% | **2.91** | 2.94 | 2.97 |
+
+Limits: only players who stayed in the league with 500+ minutes have an outcome, so comparables are biased toward careers that continued. League-wide trends (like the rise of the 3-point shot) are only partly captured, because comparables come from earlier seasons.
+
 ## Project layout
 
 ```
 src/basketball_ml/
 ├── data.py          # shared loaders (Basketball-Reference advanced stats)
 ├── cli.py           # basketball-ml entry point, one subcommand per module
-└── twins/
-    ├── similarity.py  # per-season z-scores, career profiles, nearest neighbors
-    ├── plot.py        # percentile radar charts
-    └── cli.py         # basketball-ml twins
+├── twins/
+│   ├── similarity.py  # per-season z-scores, career profiles, nearest neighbors
+│   ├── plot.py        # percentile radar charts
+│   └── cli.py         # basketball-ml twins
+└── projections/
+    ├── comparables.py # same-age comparables and weighted projections
+    ├── backtest.py    # error against no-change and age-curve baselines
+    └── cli.py         # basketball-ml project / backtest
 tests/
 ```
 
@@ -91,7 +141,7 @@ pytest
 
 ## Roadmap
 
-- **Career projections from comparables**: predict a player's next seasons from his twins at the same age, in the spirit of FiveThirtyEight's CARMELO.
+- **Better projections**: regress toward the mean, add minutes and availability, and give an uncertainty range from the spread of the comparables.
 - **Style embeddings** learned from play-by-play data, as in [NBA2Vec](https://arxiv.org/abs/2302.13386), to replace aggregated stats.
 - **Game predictions** from recent form, rest, injuries and Elo-style ratings.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

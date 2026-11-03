@@ -19,7 +19,7 @@ from .model import StyleAutoencoder, embed, identification, summarize
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--data-dir", default="data/pbp", help="Where play-by-play files are cached")
     p.add_argument("--first-season", type=int, default=2014, help="First season loaded (end year)")
-    p.add_argument("--last-season", type=int, default=2025, help="Last season loaded (end year)")
+    p.add_argument("--last-season", type=int, default=2026, help="Last season loaded (end year)")
     p.add_argument("--min-fga", type=int, default=300, help="Minimum shot attempts in a season")
 
 
@@ -32,7 +32,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     t.set_defaults(func=run_twins)
 
     a = subparsers.add_parser("archetypes", help="Group one season's players into style archetypes.")
-    a.add_argument("--season", type=int, default=2025)
+    a.add_argument("--season", type=int, default=2026)
     a.add_argument("-k", type=int, default=8, help="Number of archetypes")
     a.add_argument("--map", default=None, help="Output PNG path for the style map")
     _common(a)
@@ -89,7 +89,10 @@ def run_archetypes(args: argparse.Namespace) -> None:
         print(f"{n['archetype']}. {n['traits']} ({n['players']} players)")
         print(f"   {', '.join(members['player'].head(8))}")
     if args.map:
-        stars = grouped.sort_values("fga", ascending=False)["player"].head(10).tolist()
+        # Label the highest-volume shooter of each archetype, then the next biggest names.
+        by_volume = grouped.sort_values("fga", ascending=False)
+        stars = by_volume.drop_duplicates("archetype")["player"].tolist()
+        stars += [p for p in by_volume["player"] if p not in stars][:12 - len(stars)]
         out = style_map(grouped, cols, args.map, names=names, highlight=stars,
                         title=f"NBA style map, {_label(args.season)} (from play-by-play)")
         print(f"\nStyle map saved: {out}")

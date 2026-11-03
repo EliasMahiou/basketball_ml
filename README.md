@@ -185,7 +185,7 @@ Both models track the diagonal, with an average gap of about 2 points between th
 
 ## Play-by-play style
 
-![NBA style map](docs/style_map_2025.png)
+![NBA style map](docs/style_map_2026.png)
 
 Box scores say how much a player produces. Play-by-play shows **how** he plays: where he shoots from, which kind of shots, how often his makes are assisted, how he turns the ball over.
 
@@ -198,23 +198,23 @@ Box scores say how much a player produces. Play-by-play shows **how** he plays: 
     - **Creation**: share of made shots that were assisted, share of turnovers that were bad passes, average shot distance
 2. **Per-season z-scores**, as in the twins module.
 3. **Archetypes**: k-means clusters, each named by its three most distinctive traits.
-4. **Style map**: the two main axes of the features (PCA). One runs from perimeter to interior, the other from self-created to spot-up.
+4. **Style map**: the two main axes of the features (PCA). One runs from perimeter to interior, the other from self-created to spot-up. The map labels the highest-volume shooter of each archetype plus the next biggest names.
 5. **Compact embedding**: an autoencoder squeezes the 34 features into 8 numbers.
 
 ### Usage
 
 ```bash
 basketball-ml style-twins "Stephen Curry"         # closest styles since 2013-14
-basketball-ml archetypes --season 2025 --map docs/style_map_2025.png
-basketball-ml style-backtest --advanced data/Advanced.csv
+basketball-ml archetypes --season 2026 --map docs/style_map_2026.png
+basketball-ml style-backtest --last-season 2025 --advanced data/Advanced.csv
 ```
 
 ```
-Closest play-by-play styles to Stephen Curry in 2024-25:
+Closest play-by-play styles to Stephen Curry in 2025-26:
 
-  D'Angelo Russell           2022-23  similarity 60.5
-  Dennis Schroder            2019-20  similarity 55.9
-  Paul George                2020-21  similarity 54.8
+  Bradley Beal               2016-17  similarity 55.0
+  Evan Fournier              2019-20  similarity 53.7
+  Dennis Schroder            2019-20  similarity 52.7
 ```
 
 ### Does it capture a player's identity?

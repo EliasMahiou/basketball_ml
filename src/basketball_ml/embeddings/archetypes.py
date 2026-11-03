@@ -73,13 +73,6 @@ def style_map(table: pd.DataFrame, columns: Sequence[str], out_path: str | Path,
         m = groups == g
         ax.scatter(xy[m, 0], xy[m, 1], s=18, alpha=0.65, color=cmap(int(g) % 10),
                    label=labels.get(g, f"Archetype {g}"))
-    player_names = table["player"].to_numpy()
-    for name in highlight:
-        idx = np.where(player_names == name)[0]
-        if len(idx):
-            i = idx[0]
-            ax.scatter(xy[i, 0], xy[i, 1], s=60, color="black", zorder=3)
-            ax.annotate(name, xy[i], xytext=(5, 4), textcoords="offset points", fontsize=9, fontweight="bold")
     ax.set_xlabel("Perimeter  \u2190  style axis 1  \u2192  Interior")
     ax.set_ylabel("Self-created  \u2190  style axis 2  \u2192  Spot-up")
     ax.legend(fontsize=8, frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
@@ -88,8 +81,42 @@ def style_map(table: pd.DataFrame, columns: Sequence[str], out_path: str | Path,
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     fig.tight_layout()
+    _label_points(fig, ax, xy, table["player"].to_numpy(), highlight)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def _label_points(fig, ax, xy: np.ndarray, player_names: np.ndarray, highlight: Sequence[str]) -> None:
+    """Mark and name the ``highlight`` players without labels covering each other or their dots.
+
+    Each label tries positions around its dot, nearest first, and keeps the
+    first free one; a thin leader line ties it to the dot.
+    """
+    from matplotlib.text import Text
+    from matplotlib.transforms import Bbox
+
+    renderer = fig.canvas.get_renderer()
+    points = [np.where(player_names == name)[0] for name in highlight]
+    placed = [Bbox.from_bounds(*(ax.transData.transform(xy[i[0]]) - 7), 14, 14) for i in points if len(i)]
+    offsets = [(dx * r, dy * r) for r in (8, 16, 26)
+               for dx, dy in ((1, 0.6), (-1, 0.6), (1, -0.9), (-1, -0.9), (0, 1.2), (0, -1.5))]
+    for name, idx in zip(highlight, points):
+        if not len(idx):
+            continue
+        i = idx[0]
+        ax.scatter(xy[i, 0], xy[i, 1], s=60, color="black", zorder=3)
+        for k, (dx, dy) in enumerate(offsets):
+            ha = "left" if dx > 0 else "right" if dx < 0 else "center"
+            va = "bottom" if dy > 0 else "top"
+            label = ax.annotate(name, xy[i], xytext=(dx, dy), textcoords="offset points", fontsize=9,
+                                fontweight="bold", ha=ha, va=va, zorder=4,
+                                arrowprops=dict(arrowstyle="-", color="0.35", lw=0.6, shrinkA=1, shrinkB=4))
+            label.update_positions(renderer)
+            box = Text.get_window_extent(label, renderer).expanded(1.04, 1.1)
+            if k == len(offsets) - 1 or not any(box.overlaps(other) for other in placed):
+                break
+            label.remove()
+        placed.append(box)

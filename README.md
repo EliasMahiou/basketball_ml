@@ -170,10 +170,10 @@ Out of sample from 2017-18 to 2025-26 (10,746 games), with each season predicted
 | Elo alone | 65.1% | 0.622 | 0.217 |
 | Logistic regression, without lineups | 65.6% | 0.620 | 0.216 |
 | Logistic regression, with lineup strength | 66.2% | 0.612 | 0.212 |
-| **Logistic regression, with lineup strength and impact** | **66.9%** | **0.607** | **0.210** |
-| Gradient boosting, same features | 66.6% | 0.610 | 0.211 |
+| **Logistic regression, with lineup strength and impact** | **67.1%** | **0.606** | **0.209** |
+| Gradient boosting, same features | 67.0% | 0.607 | 0.210 |
 
-Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6113, both 0.6068. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (69.4% accuracy, log loss 0.582), and 2020-21 the least (64.2%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used.
+Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6090, both 0.6058. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (69.0% accuracy, log loss 0.581), and 2020-21 the least (64.2%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used.
 
 ### Calibration
 
@@ -181,7 +181,7 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6068 to 0.6061), so it isn't used.
+Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6058 to 0.6050), so it isn't used.
 
 ## Play-by-play style
 
@@ -239,8 +239,9 @@ How many points does a player add to his team per 100 possessions, once you acco
 
 1. **Who is on the court.** The play-by-play lists substitutions but not who starts each quarter, so the starters of a quarter are the players whose first appearance in it isn't being subbed in. This works for 99.7% of quarters; the rest (a player who never touches the ball for a whole quarter) are skipped. Events are kept in file order, because event numbers are often out of order around substitutions.
 2. **Stints.** Each stretch with the same ten players gives the points each team scored and its possessions (`FGA + 0.44 FTA - OREB + TOV`). That's 853,000 stints from 2012-13 to 2025-26.
-3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward average, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
-4. **Tuning.** The shrinkage (`alpha = 4000`), the window and the rating of unrated players (rookies, -1.5) were chosen on 2015-16 to 2018-19 only, by how well each season's ratings explain the next season's game margins.
+3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward a prior, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
+4. **Box-score prior.** Plain RAPM shrinks everyone toward average. Here each player is shrunk toward a box-score estimate instead: his production (points + assists + rebounds + steals + blocks - turnovers) per 100 possessions, mapped to the rating scale by regressing plain RAPM on it. The prior is split evenly between offense and defense, so the total is more reliable than the offense/defense split.
+5. **Tuning.** The shrinkage (`alpha = 4000`), the window, the prior's own shrinkage (300 possessions) and the rating of unrated players (rookies, -1.5) were chosen on 2015-16 to 2018-19 only, by how well each season's ratings explain the next season's game margins.
 
 ### Usage
 
@@ -255,18 +256,18 @@ basketball-ml impact-backtest             # RAPM vs simpler ratings, season by s
 
 | | Player | Offense | Defense | RAPM |
 | --- | --- | --- | --- | --- |
-| 1 | Shai Gilgeous-Alexander | +5.7 | +2.1 | +7.8 |
-| 2 | Victor Wembanyama | +2.2 | +4.3 | +6.5 |
-| 3 | Nikola Jokić | +6.3 | +0.1 | +6.4 |
-| 4 | Giannis Antetokounmpo | +4.4 | +1.2 | +5.6 |
-| 5 | Kawhi Leonard | +4.1 | +1.5 | +5.5 |
-| 6 | Derrick White | +2.0 | +3.0 | +5.0 |
-| 7 | Chet Holmgren | +1.7 | +3.3 | +5.0 |
-| 8 | Ausar Thompson | +1.7 | +2.7 | +4.4 |
-| 9 | Amen Thompson | +2.1 | +2.1 | +4.2 |
-| 10 | Alex Caruso | +1.0 | +3.2 | +4.2 |
+| 1 | Shai Gilgeous-Alexander | +6.6 | +3.0 | +9.6 |
+| 2 | Nikola Jokić | +7.4 | +1.2 | +8.6 |
+| 3 | Victor Wembanyama | +3.2 | +5.3 | +8.5 |
+| 4 | Giannis Antetokounmpo | +5.6 | +2.3 | +7.9 |
+| 5 | Kawhi Leonard | +4.8 | +2.2 | +7.0 |
+| 6 | Chet Holmgren | +2.1 | +3.7 | +5.9 |
+| 7 | Luka Dončić | +4.8 | +0.9 | +5.7 |
+| 8 | Derrick White | +2.1 | +3.1 | +5.2 |
+| 9 | Jarrett Allen | +3.1 | +1.8 | +4.9 |
+| 10 | Neemias Queta | +1.5 | +3.2 | +4.7 |
 
-The 2014-15 and 2015-16 top 5 is Draymond Green, Stephen Curry, LeBron James, Kawhi Leonard and Chris Paul. Defensive specialists (Ausar Thompson, Alex Caruso, Derrick White) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
+The 2014-15 and 2015-16 top 5 is Stephen Curry, LeBron James, Draymond Green, Kawhi Leonard and Chris Paul. Defensive players (Derrick White, Neemias Queta) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
 
 ### Does it work?
 
@@ -274,12 +275,13 @@ Ratings from the two previous seasons, applied to the players actually on the co
 
 | Rating | Margin explained |
 | --- | --- |
-| **RAPM** | **14.6%** |
+| **RAPM with the box-score prior** | **15.4%** |
+| RAPM shrunk toward average | 14.6% |
 | Box-score production per game | 12.0% |
 | Raw on-court net rating | 11.3% |
 | Adjusted plus-minus without shrinkage | 11.1% |
 
-RAPM is the best rating in 8 of the 11 seasons. It ties raw net rating in 2015-16, and box-score production wins 2020-21 (played mostly without fans) and 2025-26. Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 66.9%.
+RAPM with the box-score prior is the best rating in 10 of the 11 seasons; box-score production alone wins 2020-21, played mostly without fans. The prior helps in every season, most in 2025-26 (13.5% to 15.7%). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 67.1%.
 
 ## Project layout
 
@@ -325,5 +327,5 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **RAPM with a box-score prior**: shrink each rating toward a box-score estimate instead of toward zero, and update ratings during the season.
+- **A richer box-score prior** for RAPM: separate offense and defense estimates from shooting efficiency, rebounding and defensive events instead of one production number.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

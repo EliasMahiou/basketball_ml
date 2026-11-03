@@ -40,6 +40,15 @@ def load_stints(data_dir: str | Path, first: int, last: int) -> pd.DataFrame:
     return cached_csv(data_dir / f"stints_{first}_{last}.csv", lambda: build_stints(range(first, last + 1), data_dir))
 
 
+def load_production(data_dir: str | Path, first: int, last: int) -> pd.DataFrame:
+    """Box-score production per player and game (the RAPM prior's input), cached in ``data_dir``."""
+    from ..predictions.availability import build_player_games
+
+    data_dir = Path(data_dir)
+    return cached_csv(data_dir / f"appearances_{first}_{last}.csv",
+                      lambda: build_player_games(range(first, last + 1), data_dir))
+
+
 def player_names(seasons, data_dir: str | Path) -> dict[int, str]:
     """Latest name of every player id seen in the play-by-play of ``seasons``."""
     names: dict[int, str] = {}
@@ -54,8 +63,9 @@ def run_ratings(args: argparse.Namespace) -> None:
     from ..twins.similarity import _normalize
 
     stints = load_stints(args.data_dir, args.first_season, args.last_season)
+    production = load_production(args.data_dir, args.first_season, args.last_season)
     season = args.season or args.last_season
-    table = ratings_before(stints, season + 1)
+    table = ratings_before(stints, season + 1, production=production)
     seasons = list(range(season - DEFAULT_WINDOW + 1, season + 1))
     names = player_names(seasons, args.data_dir)
     table["player"] = table["player_id"].map(names)
@@ -78,14 +88,10 @@ def run_ratings(args: argparse.Namespace) -> None:
 
 
 def run_backtest(args: argparse.Namespace) -> None:
-    from ..predictions.availability import build_player_games
     from .rapm import on_court_net
 
     stints = load_stints(args.data_dir, args.first_season, args.last_season)
-    data_dir = Path(args.data_dir)
-    tag = f"{args.first_season}_{args.last_season}"
-    appearances = cached_csv(data_dir / f"appearances_{tag}.csv",
-                             lambda: build_player_games(range(args.first_season, args.last_season + 1), data_dir))
+    appearances = load_production(args.data_dir, args.first_season, args.last_season)
 
     def production(train: pd.DataFrame, season: int) -> pd.DataFrame:
         """Box-score production per game in each player's most recent season."""
@@ -95,7 +101,8 @@ def run_backtest(args: argparse.Namespace) -> None:
         return table.rename(columns={"production": "rapm"})
 
     raters = {
-        "RAPM": lambda train, t: ratings_before(train, t),
+        "RAPM, box-score prior": lambda train, t: ratings_before(train, t, production=appearances),
+        "RAPM, no prior": lambda train, t: ratings_before(train, t),
         "Box-score production": production,
         "APM (no shrinkage)": lambda train, t: ratings_before(train, t, alpha=1.0),
         "On-court net rating": lambda train, t: on_court_net(train),
@@ -107,5 +114,5 @@ def run_backtest(args: argparse.Namespace) -> None:
     print(result.round(3).to_string())
     print("\nAverage:")
     print(result.mean().round(3).to_string())
-    wins = (result.idxmax(axis=1) == "RAPM").sum()
-    print(f"\nRAPM is best in {wins} of {len(result)} seasons.")
+    wins = (result.idxmax(axis=1) == "RAPM, box-score prior").sum()
+    print(f"\nRAPM with the box-score prior is best in {wins} of {len(result)} seasons.")

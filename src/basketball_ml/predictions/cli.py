@@ -58,11 +58,12 @@ def _games(args: argparse.Namespace, lineups: bool = True):
     stints = load_stints(data_dir, args.first_season, args.last_season)
 
     dates = games.set_index("game_id")["date"]
-    ratings = cached_csv(data_dir / f"rapm_schedule_{tag}.csv", parse_dates=["as_of"], build=lambda: rating_schedule(
-        stints, dates, range(args.first_season + 1, args.last_season + 1)))
+    ratings = cached_csv(data_dir / f"rapm_prior_schedule_{tag}.csv", parse_dates=["as_of"], build=lambda: rating_schedule(
+        stints, dates, range(args.first_season + 1, args.last_season + 1), production=appearances))
     seconds = player_seconds(stints)
     games = add_impact(games, seconds, ratings)
-    latest = cached_csv(data_dir / f"rapm_latest_{tag}.csv", lambda: ratings_before(stints, args.last_season + 1))
+    latest = cached_csv(data_dir / f"rapm_prior_latest_{tag}.csv",
+                        lambda: ratings_before(stints, args.last_season + 1, production=appearances))
     return games, state, {"appearances": appearances, "seconds": seconds, "latest_ratings": latest}
 
 

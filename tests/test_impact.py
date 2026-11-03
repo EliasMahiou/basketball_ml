@@ -89,3 +89,20 @@ def test_add_impact_uses_the_latest_ratings_dated_before_each_game():
                             "as_of": pd.to_datetime(["2020-01-01"] * 2 + ["2020-01-15"] * 2)})
     out = add_impact(games, seconds, ratings)
     assert out["rapm_diff"].tolist() == [5.0, 15.0]
+
+
+def test_rapm_shrinks_toward_the_box_score_prior():
+    from basketball_ml.impact import box_prior
+
+    stints = _synthetic_stints(n=600)
+    # Player 0 is the strong one and also the most productive in the box score.
+    rows = [{"season": 2020, "game_id": g, "player_id": pid, "production": 30.0 if pid == 0 else 10.0}
+            for g in stints["game_id"].unique() for pid in range(30)]
+    prior = box_prior(stints, pd.DataFrame(rows))
+    assert prior.idxmax() == 0
+    heavy = 1e7   # so much shrinkage that the ratings are the prior itself
+    plain = fit_rapm(stints, alpha=heavy).set_index("player_id")["rapm"]
+    shrunk = fit_rapm(stints, alpha=heavy, prior=prior).set_index("player_id")
+    assert plain.abs().max() < 0.01
+    assert np.allclose(shrunk["rapm"], prior.reindex(shrunk.index), atol=0.01)
+    assert np.allclose(shrunk["orapm"], shrunk["drapm"], atol=0.01)

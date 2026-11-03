@@ -7,8 +7,10 @@ Every stint gives two observations, one per team on offense:
                                  + sum of the 5 defensive players' D ratings
 
 weighted by the stint's possessions. Ridge regression shrinks every rating
-toward zero (average), which keeps players with few possessions, or who
-always share the court with the same teammates, from getting wild values.
+toward a prior, which keeps players with few possessions, or who always
+share the court with the same teammates, from getting wild values. The plain
+version shrinks toward zero (average); with box-score data, each player is
+shrunk toward a box-score estimate of his rating instead (see :func:`box_prior`).
 
 ``orapm`` is points added per 100 possessions on offense, ``drapm`` points
 prevented on defense, and ``rapm`` their sum (a +2 player makes his team
@@ -33,6 +35,8 @@ DEFAULT_HALF_LIFE = 2.0
 DEFAULT_WINDOW = 2
 # Rating for players without one (mostly rookies), who are below average on the whole.
 NEWCOMER = -1.5
+# Possessions of league-average production added to each player's box-score rate.
+PRIOR_SHRINK = 300.0
 
 
 def _players(stints: pd.DataFrame) -> np.ndarray:
@@ -73,17 +77,62 @@ def design(stints: pd.DataFrame, players: np.ndarray, season_weights: dict[int, 
 
 
 def fit_rapm(stints: pd.DataFrame, alpha: float = DEFAULT_ALPHA,
-             season_weights: dict[int, float] | None = None) -> pd.DataFrame:
-    """Fit RAPM on ``stints``. Returns one row per player with orapm, drapm, rapm and possessions."""
+             season_weights: dict[int, float] | None = None, prior: pd.Series | None = None) -> pd.DataFrame:
+    """Fit RAPM on ``stints``. Returns one row per player with orapm, drapm, rapm and possessions.
+
+    ``prior`` maps player ids to the net rating each player is shrunk toward
+    (split evenly between offense and defense); players missing from it, and
+    every player when it is None, are shrunk toward zero.
+    """
     players = _players(stints)
     X, y, w = design(stints, players, season_weights)
-    model = Ridge(alpha=alpha, solver="sparse_cg", max_iter=5000, tol=1e-6).fit(X, y, sample_weight=w)
     p = len(players)
-    table = pd.DataFrame({"player_id": players, "orapm": model.coef_[:p], "drapm": -model.coef_[p:2 * p]})
+    base = np.zeros(p) if prior is None else prior.reindex(players).fillna(0.0).to_numpy(float)
+    offset = X[:, :p] @ (base / 2) - X[:, p:2 * p] @ (base / 2)
+    model = Ridge(alpha=alpha, solver="sparse_cg", max_iter=5000, tol=1e-6).fit(X, y - offset, sample_weight=w)
+    table = pd.DataFrame({"player_id": players, "orapm": base / 2 + model.coef_[:p],
+                          "drapm": base / 2 - model.coef_[p:2 * p]})
     table["rapm"] = table["orapm"] + table["drapm"]
     table = table.merge(possessions(stints), on="player_id", how="left")
     table.attrs.update(intercept=float(model.intercept_), home_edge=float(model.coef_[-1]))
     return table
+
+
+def box_prior(stints: pd.DataFrame, production: pd.DataFrame, season_weights: dict[int, float] | None = None,
+              plain: pd.DataFrame | None = None, shrink: float = PRIOR_SHRINK, alpha: float = DEFAULT_ALPHA) -> pd.Series:
+    """Box-score estimate of each player's rating, for RAPM to shrink toward.
+
+    Each player's box-score production (one row per player and game, with
+    ``season``, ``game_id``, ``player_id`` and ``production``, for example
+    :func:`basketball_ml.predictions.build_player_games`) per 100 possessions
+    over the games in ``stints``, pulled toward the league rate by ``shrink``
+    possessions, is mapped to the rating scale by a possession-weighted
+    regression of plain RAPM (``plain``, fitted here when not given) on it.
+    """
+    weights = season_weights or {s: 1.0 for s in stints["season"].unique()}
+    if plain is None:
+        plain = fit_rapm(stints, alpha, season_weights)
+    games = production[production["game_id"].isin(set(stints["game_id"]))]
+    made = (games["production"] * games["season"].map(weights)).groupby(games["player_id"]).sum()
+    w = stints["season"].map(weights)
+    poss = possessions(stints.assign(home_poss=stints["home_poss"] * w, away_poss=stints["away_poss"] * w))
+    table = poss.set_index("player_id")[["possessions"]].join(made.rename("made")).fillna(0.0)
+    league = table["made"].sum() / table["possessions"].sum()
+    rate = 100 * (table["made"] + shrink * league) / (table["possessions"] + shrink)
+    target = plain.set_index("player_id")["rapm"].reindex(table.index).fillna(0.0)
+    root = np.sqrt(table["possessions"].to_numpy())
+    X = np.c_[np.ones(len(rate)), rate.to_numpy()]
+    beta = np.linalg.lstsq(X * root[:, None], target.to_numpy() * root, rcond=None)[0]
+    return pd.Series(X @ beta, index=table.index, name="prior")
+
+
+def _fit(stints: pd.DataFrame, alpha: float, weights: dict[int, float],
+         production: pd.DataFrame | None) -> pd.DataFrame:
+    """Plain RAPM, or RAPM shrunk toward the box-score prior when ``production`` is given."""
+    plain = fit_rapm(stints, alpha, weights)
+    if production is None:
+        return plain
+    return fit_rapm(stints, alpha, weights, prior=box_prior(stints, production, weights, plain))
 
 
 def possessions(stints: pd.DataFrame) -> pd.DataFrame:
@@ -118,30 +167,35 @@ def recency_weights(seasons: Sequence[int], half_life: float = 1.0) -> dict[int,
 
 
 def ratings_before(stints: pd.DataFrame, season: int, window: int = DEFAULT_WINDOW,
-                   half_life: float = DEFAULT_HALF_LIFE, alpha: float = DEFAULT_ALPHA) -> pd.DataFrame:
-    """RAPM from the ``window`` seasons before ``season`` (recent seasons weigh more)."""
+                   half_life: float = DEFAULT_HALF_LIFE, alpha: float = DEFAULT_ALPHA,
+                   production: pd.DataFrame | None = None) -> pd.DataFrame:
+    """RAPM from the ``window`` seasons before ``season`` (recent seasons weigh more).
+
+    With ``production`` (box-score production per player and game), ratings are
+    shrunk toward the box-score prior instead of zero.
+    """
     seasons = [s for s in range(season - window, season) if s in set(stints["season"])]
     if not seasons:
         raise ValueError(f"No stints before {season}")
-    return fit_rapm(stints[stints["season"].isin(seasons)], alpha, recency_weights(seasons, half_life))
+    return _fit(stints[stints["season"].isin(seasons)], alpha, recency_weights(seasons, half_life), production)
 
 
 def ratings_as_of(stints: pd.DataFrame, dates: pd.Series, season: int, as_of: pd.Timestamp,
                   window: int = DEFAULT_WINDOW, half_life: float = DEFAULT_HALF_LIFE,
-                  alpha: float = DEFAULT_ALPHA) -> pd.DataFrame:
+                  alpha: float = DEFAULT_ALPHA, production: pd.DataFrame | None = None) -> pd.DataFrame:
     """RAPM during ``season``: the ``window`` seasons before plus its games played before ``as_of``.
 
-    ``dates`` maps game ids to game dates.
+    ``dates`` maps game ids to game dates; ``production`` is as in :func:`ratings_before`.
     """
     game_dates = stints["game_id"].map(dates)
     earlier = stints["season"].between(season - window, season - 1)
     so_far = (stints["season"] == season) & (game_dates < as_of)
     seasons = list(range(season - window, season + 1))
-    return fit_rapm(stints[earlier | so_far], alpha, recency_weights(seasons, half_life))
+    return _fit(stints[earlier | so_far], alpha, recency_weights(seasons, half_life), production)
 
 
 def rating_schedule(stints: pd.DataFrame, dates: pd.Series, seasons: Sequence[int],
-                    every_days: int = 30) -> pd.DataFrame:
+                    every_days: int = 30, production: pd.DataFrame | None = None) -> pd.DataFrame:
     """Ratings refreshed every ``every_days`` days through each season, each from earlier games only.
 
     Returns a long table with ``season`` and ``as_of`` (first date the ratings
@@ -158,7 +212,8 @@ def rating_schedule(stints: pd.DataFrame, dates: pd.Series, seasons: Sequence[in
         if played.empty:
             continue
         for as_of in pd.date_range(played.min(), played.max(), freq=f"{every_days}D"):
-            parts.append(ratings_as_of(stints, dates, season, as_of).assign(season=season, as_of=as_of))
+            ratings = ratings_as_of(stints, dates, season, as_of, production=production)
+            parts.append(ratings.assign(season=season, as_of=as_of))
     return pd.concat(parts, ignore_index=True)
 
 
@@ -212,6 +267,6 @@ def backtest(stints: pd.DataFrame, test_seasons: Sequence[int], raters: dict | N
         rows[t] = {}
         for name, rate in raters.items():
             ratings = rate(train, t)
-            default = NEWCOMER if name == "RAPM" else float(ratings["rapm"].quantile(0.3))
+            default = NEWCOMER if name.startswith("RAPM") else float(ratings["rapm"].quantile(0.3))
             rows[t][name] = game_r2(test, predict_margin(test, ratings, default=default))
     return pd.DataFrame(rows).T

@@ -155,16 +155,49 @@ def matchup(home: str, away: str, state, appearances: pd.DataFrame, games: pd.Da
     return feats, lineups
 
 
+def live_ratings(args: argparse.Namespace, season: int, played: pd.DataFrame, dates: pd.Series,
+                 newcomers: set) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Player ratings of the season in progress: its 30-day refreshes so far, and ratings through its last game.
+
+    The season's play-by-play comes from the live feed and is added to the
+    archived seasons; both tables get the forecast layer (see
+    :func:`basketball_ml.impact.projection.project_schedule`), with
+    draft-pick and age values for ``newcomers``.
+    """
+    from ..impact import box_scores, project, project_schedule, rating_schedule, ratings_as_of, season_stints
+    from ..impact.cli import load_before, load_box, load_projection, load_stints
+    from ..impact.projection import load_bio
+    from . import live
+
+    bio = load_bio(args.bio_dir)
+    coefficients = load_projection(args.data_dir, args.bio_dir, args.first_season, args.last_season)
+    newcomers = set(newcomers) | set(bio.index[bio["draft_year"] == season - 1])
+    if played.empty:
+        current = project(load_before(args.data_dir, args.first_season, args.last_season)[season], season, bio,
+                          coefficients.loc[season], sorted(newcomers))
+        return current.assign(season=season, as_of=pd.NaT), current
+    events = live.season_events(played, args.live_dir)
+    stints = pd.concat([load_stints(args.data_dir, args.first_season, args.last_season),
+                        season_stints(season, events=events)], ignore_index=True)
+    box = pd.concat([load_box(args.data_dir, args.first_season, args.last_season),
+                     box_scores(events).assign(season=season)], ignore_index=True)
+    schedule = project_schedule(rating_schedule(stints, dates, [season], box=box, luck=True), stints, bio,
+                                coefficients)
+    latest = ratings_as_of(stints, dates, season, played["date"].max() + pd.Timedelta(days=1), box=box, luck=True)
+    newcomers |= set(stints.loc[stints["season"] == season, [f"{s}_{i}" for s in ("home", "away")
+                                                              for i in range(1, 6)]].to_numpy().ravel())
+    current = project(latest, season, bio, coefficients.loc[season], sorted(newcomers))
+    return schedule, current
+
+
 def live_season(args: argparse.Namespace) -> dict:
     """The game model and the season in progress, brought up to its last finished game.
 
     Past seasons come from the cached archives (through ``--last-season``);
-    the season in progress from the NBA's live feed. Its player ratings are
-    the preseason forecast, with draft-pick and age values for every
-    newcomer who has played.
+    the season in progress from the NBA's live feed: Elo, form, rest and
+    lineups from its games and box scores, player ratings refit from its
+    play-by-play (see :func:`live_ratings`).
     """
-    from ..impact.cli import load_before, load_projection
-    from ..impact.projection import load_bio, project
     from . import live
 
     history, _, data = _games(args)
@@ -177,13 +210,8 @@ def live_season(args: argparse.Namespace) -> dict:
     played = now[now["status"] == live.FINAL]
     apps_now = live.season_appearances(played, args.live_dir) if len(played) else pd.DataFrame(
         columns=list(dict.fromkeys([*APPEARANCE_COLUMNS, *SECONDS_COLUMNS])))
-
-    before = load_before(args.data_dir, args.first_season, args.last_season)
-    bio = load_bio(args.bio_dir)
-    coefficients = load_projection(args.data_dir, args.bio_dir, args.first_season, args.last_season)
-    newcomers = set(apps_now["player_id"]) | set(bio.index[bio["draft_year"] == season - 1])
-    ratings = project(before[season], season, bio, coefficients.loc[season], sorted(newcomers))
-    rating = dict(zip(ratings["player_id"], ratings["rapm"]))
+    dates = pd.concat([history.set_index("game_id")["date"], played.set_index("game_id")["date"]])
+    schedule, current = live_ratings(args, season, played, dates, set(apps_now["player_id"]))
 
     games, state = add_features(pd.concat([history[GAME_COLUMNS], played[GAME_COLUMNS]], ignore_index=True))
     recent = games[games["season"] >= season - 1]
@@ -193,11 +221,10 @@ def live_season(args: argparse.Namespace) -> dict:
     seconds = pd.concat([old_seconds.loc[old_seconds["season"] == season - 1, SECONDS_COLUMNS],
                          apps_now[SECONDS_COLUMNS]], ignore_index=True)
     recent = add_availability(recent, appearances)
-    start = played["date"].min() if len(played) else now["date"].min()
-    recent = add_impact(recent, seconds, ratings.assign(season=season, as_of=start))
+    recent = add_impact(recent, seconds, schedule.dropna(subset=["as_of"]))
     return {"model": model, "schedule": now, "season": season, "state": state, "games": recent,
             "so_far": recent[recent["season"] == season], "appearances": appearances,
-            "seconds": expected_seconds(seconds, season), "rating": rating}
+            "seconds": expected_seconds(seconds, season), "rating": dict(zip(current["player_id"], current["rapm"]))}
 
 
 def _names(text: str) -> list[str]:

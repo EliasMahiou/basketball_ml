@@ -189,10 +189,11 @@ def game_stints(game: pd.DataFrame, home: str,
     return stints, used, skipped
 
 
-def season_stints(season: int, data_dir: str | Path = "data/pbp") -> pd.DataFrame:
-    """All stints of a regular season, one row each."""
+def season_stints(season: int, data_dir: str | Path = "data/pbp", events: pd.DataFrame | None = None) -> pd.DataFrame:
+    """All stints of a regular season, one row each (from ``events`` when given, else the season's play-by-play)."""
+    events = pbp.load_pbp(season, data_dir) if events is None else events
     # File order is chronological; EVENTNUM is not (substitutions are often renumbered).
-    events = pbp.load_pbp(season, data_dir).sort_values(["GAME_ID", "PERIOD"], kind="stable")
+    events = events.sort_values(["GAME_ID", "PERIOD"], kind="stable")
     for col in ("PLAYER1_ID", "PLAYER2_ID", "PLAYER3_ID"):
         events[col] = pd.to_numeric(events[col], errors="coerce").fillna(0).astype(np.int64)
     homes = _home_teams(events)
@@ -240,11 +241,15 @@ def shooting_rates(events: pd.DataFrame) -> dict[int, dict[int, tuple[float, flo
         frame = frame.assign(player=rows["PLAYER1_ID"].to_numpy(), half=(rows["GAME_ID"].astype(np.int64) % 2).to_numpy())
         league = frame["made"].mean() if len(frame) else LEAGUE_SHOOTING[name == "ft"]
         pad = THREE_PAD if name == "3" else FT_PAD
+        if frame.empty:
+            tables[(name, 0)] = tables[(name, 1)] = (pd.Series(dtype=float), league)
+            continue
         counts = frame.groupby(["player", "half"])["made"].agg(["sum", "count"]).unstack("half", fill_value=0.0)
         for half in (0, 1):
             other = 1 - half
-            made = counts["sum"].get(other, 0.0)
-            att = counts["count"].get(other, 0.0)
+            none = pd.Series(0.0, index=counts.index)
+            made = counts["sum"].get(other, none)
+            att = counts["count"].get(other, none)
             tables[(name, half)] = ((made + pad * league) / (att + pad), league)
     for half in (0, 1):
         threes, league3 = tables[("3", half)]

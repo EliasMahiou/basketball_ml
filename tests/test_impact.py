@@ -43,6 +43,15 @@ def test_game_stints_tracks_starters_and_substitutions():
     assert first["home_fga"] == 5 and first["start"] - first["end"] == 120
 
 
+def test_season_stints_from_events_of_the_season_in_progress():
+    from basketball_ml.impact import season_stints
+
+    events = _game().assign(GAME_ID=22600001, season=2027)
+    stints = season_stints(2027, events=events)
+    assert len(stints) == 2 and stints["season"].eq(2027).all()
+    assert stints[["home_pts", "away_pts"]].sum().tolist() == [4, 3]
+
+
 def _synthetic_stints(n=4000, seed=0):
     """Random 5-on-5 stints among 30 players; player 0 adds 10 points per 100 possessions."""
     rng = np.random.default_rng(seed)

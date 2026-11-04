@@ -10,6 +10,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 | [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
 | [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team |
+| [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player |
 
 ## Installation
 
@@ -207,20 +208,20 @@ The market is better in every season, by 0.0066 in log loss (paired standard err
 
 ### The season in progress
 
-The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score, and today's odds from several sportsbooks). `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and rate players with the preseason forecast of the [impact module](#player-impact-rapm), with draft-pick and age values for every newcomer. Box scores are cached in `data/live/`.
+The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score and play-by-play, and today's odds from several sportsbooks). The play-by-play is in the cdn.nba.com format, converted like 2025-26's. `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and refit the player ratings from the season's own stints, as in the backtest: every 30 days for past games, and through the last game played for upcoming ones. Files of finished games are cached in `data/live/`.
 
-Through November 2, 2026, the 107 games of 2026-27 predicted that way (from the games before each one, with the players who played) went 66.4% right with a log loss of 0.582; Elo alone was 60.7% right (log loss 0.634). On November 4, 2026:
+Through November 2, 2026, the 107 games of 2026-27 predicted that way (from the games before each one, with the players who played) went 66.4% right with a log loss of 0.584; Elo alone was 60.7% right (log loss 0.634). On November 4, 2026:
 
 ```
           home win sportsbooks   elo lineup impact rest
 game
-PHI @ DET      69%         56%  +189          +2.7   +0
-ATL @ WAS      34%         42%  -157          -5.7   +0
-MIL @ BOS      89%         80%  +362          +9.9   +0
-CHI @ NYK      84%         82%  +295          +6.8   +0
-DAL @ SAS      89%         83%  +305         +12.0   +0
-LAL @ SAC      15%         17%  -186         -12.0   +0
-MIA @ LAC      43%         34%   +53          -4.9   +0
+PHI @ DET      70%         56%  +189          +3.1   +0
+ATL @ WAS      35%         42%  -157          -5.1   +0
+MIL @ BOS      89%         81%  +362          +9.7   +0
+CHI @ NYK      83%         82%  +295          +6.1   +0
+DAL @ SAS      88%         83%  +305         +11.2   +0
+LAL @ SAC      14%         17%  -186         -13.0   +0
+MIA @ LAC      42%         34%   +53          -5.4   +0
 ```
 
 The model can't see injuries announced before a game: list players who won't play with `--out`.
@@ -434,6 +435,70 @@ Shot making holds up from one season to the next as well as eFG% does: it is a s
 
 Without tracking data, shot making also includes how open the shots were. Free throws are left out, so players get no credit for drawing fouls.
 
+## Live win probability
+
+![Win probability over the biggest comeback of 2025-26](docs/winprob_game.png)
+
+The home team's chance of winning after every event of a game, and the players whose plays moved it. Above, the biggest comeback of 2025-26: Detroit, down 5 to Washington with 4 seconds left, was given less than a 0.01% chance before two Daniss Jenkins threes forced overtime. It won 137-135.
+
+### Method
+
+1. **Game states**: one per event, with the time left (in regulation, or in the current overtime), the home lead, who has the ball, and the pre-game Elo probability of the [game predictions](#game-predictions), also as a point spread (Elo gap / 28). 6.8 million states in 16,895 games from 2012-13 to 2025-26.
+2. **Who has the ball** is inferred from the order of events. Made baskets, defensive rebounds, turnovers and last made free throws switch it; a miss leaves it loose until the rebound. Shooting fouls send the team to the line with the free throws awarded. Technical free throws don't change possession, and after flagrant, clear-path and take fouls the shooting team keeps the ball. After jump balls and at the start of quarters the ball goes to the team that acts next, because the recorded tip is often wrong.
+3. **Models**, each season fit only on the seasons before it:
+    - **Brownian motion** ([Stern, 1994](https://www.jstor.org/stable/2290952)): the final margin is the current one, plus the value of the ball, plus the pre-game spread times the share of the game left, plus normal noise that shrinks with the time left. The noise, possession values, spread weight and a clock offset are fit by maximum likelihood.
+    - **Logistic regression** on the margin and possession divided by the square root of the time left, and the pre-game logit times the time left and its square root.
+    - **Gradient boosting** on the raw state, increasing in the margin, the spread and the ball.
+4. **Win probability added (WPA)**: each event's change in win probability, including the time that ran off before it, goes to the players on it: the shooter (70/30 with the passer, half to the blocker on a block), free-throw shooter, rebounder, ball handler (half to the stealer) and fouler, who is charged for the free throws he gives. **Clutch** is the NBA's definition: the last 5 minutes of the 4th quarter or overtime with the margin within 5.
+
+### Usage
+
+```bash
+basketball-ml winprob-backtest --calibration docs/winprob_calibration.png   # walk-forward evaluation
+basketball-ml winprob-game --biggest-comeback --season 2026 --out docs/winprob_game.png
+basketball-ml winprob-game 22500199     # any game id, saved to outputs/winprob_22500199.png
+basketball-ml wpa --season 2026         # leaderboard; --clutch, or --on-court for team WPA while on the court
+```
+
+The first run takes about 25 minutes and caches game states and out-of-sample probabilities in `data/pbp/winprob_*.csv`; after that each command takes seconds.
+
+2025-26 leaders, in wins added:
+
+| | Player | Team | WPA | Clutch WPA |
+| --- | --- | --- | --- | --- |
+| 1 | Nikola Jokić | DEN | 16.9 | 2.6 |
+| 2 | Jamal Murray | DEN | 12.5 | **3.0** |
+| 3 | Shai Gilgeous-Alexander | OKC | 11.9 | 2.5 |
+| 4 | Tyrese Maxey | PHI | 11.7 | 2.1 |
+| 5 | Jalen Johnson | ATL | 11.4 | 1.7 |
+| 6 | Luka Dončić | LAL | 11.0 | 1.5 |
+| 7 | Amen Thompson | HOU | 10.7 | 1.5 |
+| 8 | Donovan Clingan | POR | 10.7 | 0.9 |
+| 9 | James Harden | LAC | 10.2 | 2.1 |
+| 10 | Rudy Gobert | MIN | 9.7 | 0.6 |
+
+### Does it work?
+
+Log loss out of sample, 2015-16 to 2025-26 (5.3 million states in 13,206 games):
+
+| Model | All | Q1 | Q2 | Q3 | Q4, before the last 2 min | Last 2 min | OT |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Pre-game Elo only | 0.6199 | 0.6194 | 0.6192 | 0.6182 | 0.6176 | 0.6320 | 0.7043 |
+| **Brownian motion** | **0.4598** | 0.5995 | **0.5355** | **0.4402** | **0.2983** | **0.1433** | **0.4599** |
+| Logistic regression | **0.4598** | **0.5979** | **0.5355** | 0.4411 | 0.2993 | 0.1435 | 0.4604 |
+| Gradient boosting | 0.4636 | 0.6029 | 0.5394 | 0.4439 | 0.3020 | 0.1492 | 0.4700 |
+
+Lower is better. The events of a game are correlated, so differences are tested by resampling whole games: the Brownian model and the logistic regression are tied (+0.0000, 95% interval -0.0003 to +0.0004), and boosting is worse (+0.0039, +0.0030 to +0.0047) and last in every season. Brier scores: 0.216, 0.154, 0.154 and 0.155. Predicted and actual win rates are 1.0 points apart on average for the Brownian model (0.6 in the last 2 minutes), 1.3 (0.7) for the logistic regression and 2.1 (0.5) for boosting.
+
+![Calibration chart](docs/winprob_calibration.png)
+
+- **Possession**: the inferred team is the one that shoots next 99.93% of the time and turns it over 99.87%. For 2025-26 it matches the possession recorded by the NBA's live feed on 99.93% of 430,398 events (99.81% at dead balls).
+- **What the Brownian model learned** (2012-13 to 2024-25): the ball is worth 0.52 points, a rebound pending after a team's own miss -0.24, each free throw to shoot 0.47. Its noise, 19.3 points per game, is larger than the 13.4-point spread of final margins around the pre-game spread: leads are less safe than a random walk would make them.
+- **Ties at the end**: the models don't know that a tie goes to overtime. Tied with 10 seconds or less and the away team's ball, home teams won 49% of the time but were given 42% (logistic 43%, boosting 48%). That's why Detroit is at 34% after tying the game with a second left, then 66% when overtime starts.
+- **Long shots**: teams given 2 to 5% came back 4.1% of the time (3.4% predicted). Below 0.1% the model is right on average (0.015% predicted, 0.016% observed): 10 of 11,448 teams that fell that low came back.
+- **Boosting** needs large leaves not to overfit the pre-game spread, which is the same all game, so it blurs rare end-game states: it gave Detroit 6.6% down 5 with 4 seconds left.
+- **WPA** credits only the players on each play: defense counts through blocks, steals, defensive rebounds and fouls, so it favors high-volume players and rebounders. The 70/30 and half splits are conventions.
+
 ## Project layout
 
 ```
@@ -455,7 +520,7 @@ src/basketball_ml/
 │   ├── availability.py # who played in each game, lineup strength and impact
 │   ├── model.py       # win-probability models, walk-forward evaluation and calibration
 │   ├── market.py      # closing betting lines, matched to games, and the market benchmark
-│   ├── live.py        # the season in progress from the NBA's live feed: schedule, box scores, odds
+│   ├── live.py        # the season in progress from the NBA's live feed: schedule, box scores, play-by-play, odds
 │   ├── plot.py        # calibration chart
 │   └── cli.py         # basketball-ml predict / tonight / ratings / games-backtest
 ├── embeddings/
@@ -470,12 +535,18 @@ src/basketball_ml/
 │   ├── projection.py  # next-season forecast: rookies by draft pick and age, playing time, aging
 │   ├── bench.py       # the Hoop Impact Bench game-margin test
 │   └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
-└── shots/
-    ├── features.py    # shot features, label cleaning, score margin from the play-by-play
-    ├── model.py       # xFG models, baselines, walk-forward evaluation and calibration
-    ├── making.py      # league re-centering, arena correction, shrinkage, team tables, persistence
-    ├── plot.py        # half-court map of expected FG%
-    └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality
+├── shots/
+│   ├── features.py    # shot features, label cleaning, score margin from the play-by-play
+│   ├── model.py       # xFG models, baselines, walk-forward evaluation and calibration
+│   ├── making.py      # league re-centering, arena correction, shrinkage, team tables, persistence
+│   ├── plot.py        # half-court map of expected FG%
+│   └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality
+└── winprob/
+    ├── states.py      # game states from the play-by-play: clock, score, possession inferred from the events
+    ├── model.py       # Brownian, logistic and boosting models, walk-forward evaluation and calibration
+    ├── wpa.py         # win probability added per player, clutch and on-court, biggest comebacks
+    ├── plot.py        # game chart and calibration chart
+    └── cli.py         # basketball-ml winprob-backtest / winprob-game / wpa
 tests/
 ```
 
@@ -491,3 +562,4 @@ pytest
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
 - **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.
+- **Overtime in the win probability**: P(tie) x P(win in overtime) at the end of regulation, and live states for the season in progress from the NBA's live feed.

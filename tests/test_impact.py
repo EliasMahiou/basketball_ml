@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 import pandas as pd
 
@@ -106,3 +107,117 @@ def test_rapm_shrinks_toward_the_box_score_prior():
     assert plain.abs().max() < 0.01
     assert np.allclose(shrunk["rapm"], prior.reindex(shrunk.index), atol=0.01)
     assert np.allclose(shrunk["orapm"], shrunk["drapm"], atol=0.01)
+
+
+def test_box_scores_split_rebounds_and_skip_technicals():
+    from basketball_ml.impact.box import box_scores
+
+    ev = pd.DataFrame([
+        _event(1, 2, "11:50", 1, "HHH", p3=11, t3="AAA", home_text="MISS 3PT jumper"),
+        _event(1, 4, "11:48", 2, "HHH", home_text="REBOUND"),             # offensive: same team as the miss
+        _event(1, 1, "11:40", 2, "HHH", 1, "HHH", score="0 - 2", home_text="layup (1 AST)"),
+        _event(1, 2, "11:20", 12, "AAA", away_text="MISS jumper"),
+        _event(1, 4, "11:18", 3, "HHH", home_text="REBOUND"),             # defensive
+        _event(1, 5, "11:10", 3, "HHH", 13, "AAA", home_text="bad pass", away_text="STEAL"),
+        _event(1, 6, "11:00", 13, "AAA", 3, "HHH", action=1, away_text="P.FOUL"),
+        _event(1, 6, "11:00", 14, "AAA", action=11, away_text="T.FOUL"),  # technical: not a personal foul
+        _event(1, 3, "11:00", 3, "HHH", score="0 - 3", home_text="Free Throw 1 of 2"),
+        _event(1, 3, "11:00", 3, "HHH", home_text="MISS Free Throw 2 of 2"),
+    ]).assign(GAME_ID=1)
+    box = box_scores(ev).set_index("player_id")
+    assert box.loc[1, ["fg3a", "fg3m", "ast", "pts"]].tolist() == [1, 0, 1, 0]
+    assert box.loc[2, ["oreb", "dreb", "fg2m", "pts"]].tolist() == [1, 0, 1, 2]
+    assert box.loc[3, ["dreb", "tov", "pfd", "fta", "ftm", "pts"]].tolist() == [1, 1, 1, 2, 1, 1]
+    assert box.loc[11, "blk"] == 1 and box.loc[13, ["stl", "pf"]].tolist() == [1, 1]
+    assert 14 not in box.index or box.loc[14, "pf"] == 0
+
+
+def test_rapm_shrinks_toward_separate_offense_and_defense_priors():
+    from basketball_ml.impact import BOX_STATS, box_prior_od
+
+    stints = _synthetic_stints(n=600)
+    # Player 0 is the strong one; he also blocks many more shots than anyone.
+    rng = np.random.default_rng(1)
+    rows = []
+    for g in stints["game_id"].unique():
+        for pid in range(30):
+            row = {"season": 2020, "game_id": g, "team": "T", "player_id": pid}
+            row.update({k: float(rng.poisson(2)) for k in BOX_STATS})
+            row["blk"] = 12.0 if pid == 0 else float(rng.poisson(1))
+            rows.append(row)
+    prior = box_prior_od(stints, pd.DataFrame(rows))
+    assert set(prior.columns) == {"orapm", "drapm"}
+    assert (prior["orapm"] + prior["drapm"]).idxmax() == 0
+    heavy = 1e7
+    shrunk = fit_rapm(stints, alpha=heavy, prior=prior).set_index("player_id")
+    assert np.allclose(shrunk["orapm"], prior["orapm"].reindex(shrunk.index), atol=0.01)
+    assert np.allclose(shrunk["drapm"], prior["drapm"].reindex(shrunk.index), atol=0.01)
+
+
+def test_luck_adjusted_rapm_ignores_opponent_three_point_luck():
+    stints = _synthetic_stints(n=2000, seed=3)
+    rng = np.random.default_rng(4)
+    for side in ("home", "away"):
+        stints[f"{side}_fg3a"] = 3.0
+        stints[f"{side}_xfg3m"] = 1.08
+        stints[f"{side}_fg3m"] = rng.binomial(3, 0.36, len(stints)).astype(float)
+        stints[f"{side}_fta"] = 2.0
+        stints[f"{side}_xftm"] = 1.5
+        stints[f"{side}_ftm"] = rng.binomial(2, 0.75, len(stints)).astype(float)
+    # Player 1's opponents get hot from three: 3 extra makes per stint that only the luck adjustment removes.
+    for side, other in (("home", "away"), ("away", "home")):
+        on = (stints[player_columns(side)] == 1).any(axis=1)
+        stints.loc[on, f"{other}_fg3m"] += 3
+        stints.loc[on, f"{other}_pts"] += 9
+    plain = fit_rapm(stints, alpha=100).set_index("player_id")
+    luck = fit_rapm(stints, alpha=100, luck=True).set_index("player_id")
+    assert plain.loc[1, "drapm"] < -20
+    assert abs(luck.loc[1, "drapm"]) < abs(plain.loc[1, "drapm"]) / 3
+    assert np.isclose(luck.loc[0, "orapm"], plain.loc[0, "orapm"], atol=2.0)
+
+
+def test_projection_learns_that_high_picks_and_rotation_players_are_better():
+    from basketball_ml.impact import fit_projection, project
+
+    rng = np.random.default_rng(5)
+    bio = pd.DataFrame({"birth": pd.to_datetime("1998-06-01"), "height": 78.0,
+                        "draft_year": 2019.0, "pick": np.arange(1, 31, dtype=float)},
+                       index=pd.Index(range(30), name="player_id"))
+    # Players 0-14 are rated before both seasons; 15-29 are newcomers whose value falls with the draft pick.
+    rated = pd.DataFrame({"player_id": range(15), "rapm": 0.0, "orapm": 0.0, "drapm": 0.0,
+                          "possessions": 4000.0})
+    truth = {pid: (4.0 - 0.3 * pid if pid >= 15 else 0.0) for pid in range(30)}
+    rows = []
+    for season in (2021, 2022):
+        for _ in range(3000):
+            ids = rng.choice(30, 10, replace=False)
+            home, away = sorted(ids[:5]), sorted(ids[5:])
+            effect = sum(truth[p] for p in home) - sum(truth[p] for p in away)
+            rows.append({**dict(zip(player_columns("home"), home)), **dict(zip(player_columns("away"), away)),
+                         "home_pts": rng.normal(110 + effect / 2, 20) / 10, "away_pts": rng.normal(110 - effect / 2, 20) / 10,
+                         "home_poss": 10.0, "away_poss": 10.0, "season": season})
+    stints = pd.DataFrame(rows)
+    coef = fit_projection(stints, {2021: rated, 2022: rated}, bio, [2021, 2022])
+    assert coef["new_log_pick"] < -1
+    out = project(rated, 2022, bio, coef, players=range(30)).set_index("player_id")
+    assert len(out) == 30 and out.loc[15, "rapm"] > out.loc[29, "rapm"] + 2
+
+
+def test_bench_scores_minutes_weighted_team_ratings(tmp_path):
+    from basketball_ml.impact.bench import score_ratings
+
+    games = pd.DataFrame({"season": "2024-25", "game_id": ["1", "2", "3"], "home": ["AAA", "BBB", "AAA"],
+                          "away": ["BBB", "AAA", "BBB"], "home_pts": [110, 100, 120], "away_pts": [100, 104, 100]})
+    minutes = pd.DataFrame({"season": "2024-25", "game_id": ["1", "1", "2", "2", "3", "3"],
+                            "team": ["AAA", "BBB", "BBB", "AAA", "AAA", "BBB"], "nba_id": [7, 8, 8, 7, 7, 8],
+                            "min": 240.0})
+    minutes = pd.concat([minutes, minutes.assign(season="2023-24", game_id=minutes["game_id"] + "x")])
+    games.to_csv(tmp_path / "games.csv", index=False)
+    minutes.to_csv(tmp_path / "minutes.csv", index=False)
+    ratings = pd.DataFrame({"season": "2024-25", "nba_id": [7, 8], "rating": [2.0, -1.0]})
+    result = score_ratings(ratings, tmp_path, seasons=("2024-25",))
+    # Team AAA is rated 15 points better (5 x 2.0 against 5 x -1.0) and wins by 10, 4 and 20.
+    expected = np.corrcoef([15, -15, 15], [10, -4, 20])[0, 1] ** 2
+    assert result.loc["established", "all"] == pytest.approx(expected)
+    # Last season's minutes are 480 for both players, so both rules use the same values here.
+    assert result.loc["full forecast", "all"] == pytest.approx(expected)

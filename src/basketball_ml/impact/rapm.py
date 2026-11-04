@@ -37,27 +37,48 @@ DEFAULT_WINDOW = 2
 NEWCOMER = -1.5
 # Possessions of league-average production added to each player's box-score rate.
 PRIOR_SHRINK = 300.0
+# Box-score counts of the offense and the defense used by the separate priors (see :func:`box_prior_od`).
+OFFENSE_STATS = ("fg2m", "fg2a", "fg3m", "fg3a", "ftm", "fta", "ast", "oreb", "tov", "pfd")
+DEFENSE_STATS = ("dreb", "stl", "blk", "pf")
+# With the offense/defense prior the ratings can lean on it more: chosen on 2015-16 to 2018-19.
+PRIOR_ALPHA = 8000.0
+# Share of the opponents' 3-point luck removed from the defensive ratings (see :func:`fit_rapm`).
+# All of it did slightly better than 0.5 or 0.75 on 2015-16 to 2018-19.
+LUCK_THREES = 1.0
 
 
 def _players(stints: pd.DataFrame) -> np.ndarray:
     return np.unique(stints[player_columns("home") + player_columns("away")].to_numpy())
 
 
-def _rows(stints: pd.DataFrame):
+def _points(stints: pd.DataFrame, side: str, luck: float | None) -> np.ndarray:
+    """A side's points; with ``luck``, free throws count as expected and that share of 3-point luck is removed."""
+    pts = stints[f"{side}_pts"].to_numpy(float)
+    if luck is None:
+        return pts
+    pts = pts - stints[f"{side}_ftm"].to_numpy(float) + stints[f"{side}_xftm"].to_numpy(float)
+    return pts - luck * 3 * (stints[f"{side}_fg3m"].to_numpy(float) - stints[f"{side}_xfg3m"].to_numpy(float))
+
+
+def _rows(stints: pd.DataFrame, luck: float | None = None):
     """Offense rows (home then away) as (offense ids, defense ids, home flag, points, possessions)."""
     home = stints[player_columns("home")].to_numpy()
     away = stints[player_columns("away")].to_numpy()
     offense = np.vstack([home, away])
     defense = np.vstack([away, home])
     is_home = np.r_[np.ones(len(stints)), np.zeros(len(stints))]
-    pts = np.r_[stints["home_pts"].to_numpy(float), stints["away_pts"].to_numpy(float)]
+    pts = np.r_[_points(stints, "home", luck), _points(stints, "away", luck)]
     poss = np.r_[stints["home_poss"].to_numpy(float), stints["away_poss"].to_numpy(float)]
     return offense, defense, is_home, pts, poss
 
 
-def design(stints: pd.DataFrame, players: np.ndarray, season_weights: dict[int, float] | None = None):
-    """Sparse design matrix, target (points per 100) and weights (possessions)."""
-    offense, defense, is_home, pts, poss = _rows(stints)
+def design(stints: pd.DataFrame, players: np.ndarray, season_weights: dict[int, float] | None = None,
+           luck: float | None = None):
+    """Sparse design matrix, target (points per 100) and weights (possessions).
+
+    ``luck`` adjusts the points as in :func:`_points`.
+    """
+    offense, defense, is_home, pts, poss = _rows(stints, luck)
     keep = poss > 0
     offense, defense, is_home, pts, poss = offense[keep], defense[keep], is_home[keep], pts[keep], poss[keep]
     n, p = len(pts), len(players)
@@ -77,21 +98,39 @@ def design(stints: pd.DataFrame, players: np.ndarray, season_weights: dict[int, 
 
 
 def fit_rapm(stints: pd.DataFrame, alpha: float = DEFAULT_ALPHA,
-             season_weights: dict[int, float] | None = None, prior: pd.Series | None = None) -> pd.DataFrame:
+             season_weights: dict[int, float] | None = None,
+             prior: pd.Series | pd.DataFrame | None = None, luck: bool = False) -> pd.DataFrame:
     """Fit RAPM on ``stints``. Returns one row per player with orapm, drapm, rapm and possessions.
 
-    ``prior`` maps player ids to the net rating each player is shrunk toward
-    (split evenly between offense and defense); players missing from it, and
-    every player when it is None, are shrunk toward zero.
+    ``prior`` gives the ratings each player is shrunk toward: a Series of net
+    ratings (split evenly between offense and defense) or a DataFrame with
+    ``orapm`` and ``drapm`` columns, indexed by player id. Players missing from
+    it, and every player when it is None, are shrunk toward zero.
+
+    With ``luck``, free throws count as the shooters' expected makes, and the
+    defensive ratings come from a second fit that also removes
+    :data:`LUCK_THREES` of the opponents' 3-point luck (defenses have little
+    control over 3-point percentage; shooters do, so offense keeps it).
     """
     players = _players(stints)
-    X, y, w = design(stints, players, season_weights)
+    X, y, w = design(stints, players, season_weights, luck=0.0 if luck else None)
     p = len(players)
-    base = np.zeros(p) if prior is None else prior.reindex(players).fillna(0.0).to_numpy(float)
-    offset = X[:, :p] @ (base / 2) - X[:, p:2 * p] @ (base / 2)
+    if prior is None:
+        base_o = base_d = np.zeros(p)
+    elif isinstance(prior, pd.DataFrame):
+        base_o = prior["orapm"].reindex(players).fillna(0.0).to_numpy(float)
+        base_d = prior["drapm"].reindex(players).fillna(0.0).to_numpy(float)
+    else:
+        base_o = base_d = prior.reindex(players).fillna(0.0).to_numpy(float) / 2
+    offset = X[:, :p] @ base_o - X[:, p:2 * p] @ base_d
     model = Ridge(alpha=alpha, solver="sparse_cg", max_iter=5000, tol=1e-6).fit(X, y - offset, sample_weight=w)
-    table = pd.DataFrame({"player_id": players, "orapm": base / 2 + model.coef_[:p],
-                          "drapm": base / 2 - model.coef_[p:2 * p]})
+    defense = model
+    if luck:
+        y_d = design(stints, players, season_weights, luck=LUCK_THREES)[1]
+        defense = Ridge(alpha=alpha, solver="sparse_cg", max_iter=5000, tol=1e-6).fit(
+            X, y_d - offset, sample_weight=w)
+    table = pd.DataFrame({"player_id": players, "orapm": base_o + model.coef_[:p],
+                          "drapm": base_d - defense.coef_[p:2 * p]})
     table["rapm"] = table["orapm"] + table["drapm"]
     table = table.merge(possessions(stints), on="player_id", how="left")
     table.attrs.update(intercept=float(model.intercept_), home_edge=float(model.coef_[-1]))
@@ -126,13 +165,93 @@ def box_prior(stints: pd.DataFrame, production: pd.DataFrame, season_weights: di
     return pd.Series(X @ beta, index=table.index, name="prior")
 
 
+def on_court(stints: pd.DataFrame, season_weights: dict[int, float] | None = None) -> pd.DataFrame:
+    """Offensive and defensive possessions and seconds on the court per player (index: player id)."""
+    w = np.ones(len(stints)) if season_weights is None else stints["season"].map(season_weights).fillna(0.0).to_numpy()
+    parts = []
+    for side, other in (("home", "away"), ("away", "home")):
+        ids = stints[player_columns(side)].to_numpy()
+        parts.append(pd.DataFrame({"player_id": ids.ravel(),
+                                   "o_poss": np.repeat(stints[f"{side}_poss"].to_numpy() * w, 5),
+                                   "d_poss": np.repeat(stints[f"{other}_poss"].to_numpy() * w, 5),
+                                   "seconds": np.repeat(stints["seconds"].to_numpy() * w, 5)}))
+    return pd.concat(parts).groupby("player_id").sum()
+
+
+def box_rates(stints: pd.DataFrame, box: pd.DataFrame, season_weights: dict[int, float] | None = None,
+              shrink: float = PRIOR_SHRINK) -> pd.DataFrame:
+    """Box-score rates per 100 possessions over the games in ``stints``, one row per player.
+
+    Offensive counts are per 100 of the team's possessions with the player on
+    the court, defensive counts (:data:`DEFENSE_STATS`) per 100 of the
+    opponent's; each rate is pulled toward the league rate by ``shrink``
+    possessions. ``mpg`` is minutes per game, pulled toward 12 by 3 games.
+    ``possessions`` is the average of offensive and defensive possessions.
+    """
+    weights = season_weights or {s: 1.0 for s in stints["season"].unique()}
+    games = box[box["game_id"].isin(set(stints["game_id"]))]
+    w = games["season"].map(weights).fillna(0.0)
+    stats = [*OFFENSE_STATS, *DEFENSE_STATS]
+    counts = games[stats].mul(w, axis=0).groupby(games["player_id"]).sum()
+    played = w.groupby(games["player_id"]).sum().rename("games")
+    table = on_court(stints, weights).join(counts).join(played).fillna(0.0)
+    out = pd.DataFrame(index=table.index)
+    for stat in stats:
+        poss = table["d_poss"] if stat in DEFENSE_STATS else table["o_poss"]
+        league = table[stat].sum() / poss.sum()
+        out[stat] = 100 * (table[stat] + shrink * league) / (poss + shrink)
+    out["mpg"] = (table["seconds"] / 60 + 3 * 12.0) / (table["games"] + 3)
+    out["possessions"] = (table["o_poss"] + table["d_poss"]) / 2
+    return out
+
+
+def box_prior_od(stints: pd.DataFrame, box: pd.DataFrame, season_weights: dict[int, float] | None = None,
+                 plain: pd.DataFrame | None = None, shrink: float = PRIOR_SHRINK, alpha: float = DEFAULT_ALPHA,
+                 ridge: float = 1.0, features: Sequence[str] | None = None) -> pd.DataFrame:
+    """Separate box-score estimates of each player's offensive and defensive rating.
+
+    ``box`` holds per-game box scores (see :func:`basketball_ml.impact.build_box`).
+    Plain RAPM (``plain``, fitted here when not given) is regressed on the
+    standardized rates of :func:`box_rates`, offense and defense separately,
+    with every rate available to both (steals say something about offense too),
+    weighted by possessions and lightly ridge-penalized. ``features`` picks
+    the rates used (default: all of them and minutes per game). Returns a
+    DataFrame with ``orapm`` and ``drapm`` indexed by player id, for :func:`fit_rapm`.
+    """
+    if plain is None:
+        plain = fit_rapm(stints, alpha, season_weights)
+    rates = box_rates(stints, box, season_weights, shrink)
+    features = list(features) if features is not None else [c for c in rates.columns if c != "possessions"]
+    weight = rates["possessions"].to_numpy()
+    weight = weight / weight.mean()
+    X = rates[features].to_numpy(float)
+    mean = np.average(X, axis=0, weights=weight)
+    std = np.sqrt(np.average((X - mean) ** 2, axis=0, weights=weight))
+    Z = (X - mean) / np.where(std > 0, std, 1.0)
+    target = plain.set_index("player_id").reindex(rates.index).fillna(0.0)
+    out = pd.DataFrame(index=rates.index)
+    for column in ("orapm", "drapm"):
+        model = Ridge(alpha=ridge).fit(Z, target[column].to_numpy(), sample_weight=weight)
+        out[column] = model.predict(Z)
+    return out
+
+
 def _fit(stints: pd.DataFrame, alpha: float, weights: dict[int, float],
-         production: pd.DataFrame | None) -> pd.DataFrame:
-    """Plain RAPM, or RAPM shrunk toward the box-score prior when ``production`` is given."""
-    plain = fit_rapm(stints, alpha, weights)
+         production: pd.DataFrame | None, box: pd.DataFrame | None = None,
+         luck: bool = False, prior_alpha: float = PRIOR_ALPHA) -> pd.DataFrame:
+    """Plain RAPM, or RAPM shrunk toward a box-score prior.
+
+    With ``box`` (per-game box scores) the prior has separate offense and
+    defense parts (:func:`box_prior_od`) and the final fit uses ``prior_alpha``;
+    with only ``production`` it is a net rating (:func:`box_prior`). ``luck``
+    is passed to :func:`fit_rapm`.
+    """
+    plain = fit_rapm(stints, alpha, weights, luck=luck)
+    if box is not None:
+        return fit_rapm(stints, prior_alpha, weights, prior=box_prior_od(stints, box, weights, plain), luck=luck)
     if production is None:
         return plain
-    return fit_rapm(stints, alpha, weights, prior=box_prior(stints, production, weights, plain))
+    return fit_rapm(stints, alpha, weights, prior=box_prior(stints, production, weights, plain), luck=luck)
 
 
 def possessions(stints: pd.DataFrame) -> pd.DataFrame:
@@ -168,34 +287,40 @@ def recency_weights(seasons: Sequence[int], half_life: float = 1.0) -> dict[int,
 
 def ratings_before(stints: pd.DataFrame, season: int, window: int = DEFAULT_WINDOW,
                    half_life: float = DEFAULT_HALF_LIFE, alpha: float = DEFAULT_ALPHA,
-                   production: pd.DataFrame | None = None) -> pd.DataFrame:
+                   production: pd.DataFrame | None = None, box: pd.DataFrame | None = None,
+                   luck: bool = False) -> pd.DataFrame:
     """RAPM from the ``window`` seasons before ``season`` (recent seasons weigh more).
 
-    With ``production`` (box-score production per player and game), ratings are
-    shrunk toward the box-score prior instead of zero.
+    With ``production`` (box-score production per player and game) or ``box``
+    (per-game box scores), ratings are shrunk toward a box-score prior instead
+    of zero; ``luck`` takes free-throw and opponent 3-point luck out (see
+    :func:`_fit` and :func:`fit_rapm`).
     """
     seasons = [s for s in range(season - window, season) if s in set(stints["season"])]
     if not seasons:
         raise ValueError(f"No stints before {season}")
-    return _fit(stints[stints["season"].isin(seasons)], alpha, recency_weights(seasons, half_life), production)
+    return _fit(stints[stints["season"].isin(seasons)], alpha, recency_weights(seasons, half_life), production, box,
+                luck)
 
 
 def ratings_as_of(stints: pd.DataFrame, dates: pd.Series, season: int, as_of: pd.Timestamp,
                   window: int = DEFAULT_WINDOW, half_life: float = DEFAULT_HALF_LIFE,
-                  alpha: float = DEFAULT_ALPHA, production: pd.DataFrame | None = None) -> pd.DataFrame:
+                  alpha: float = DEFAULT_ALPHA, production: pd.DataFrame | None = None,
+                  box: pd.DataFrame | None = None, luck: bool = False) -> pd.DataFrame:
     """RAPM during ``season``: the ``window`` seasons before plus its games played before ``as_of``.
 
-    ``dates`` maps game ids to game dates; ``production`` is as in :func:`ratings_before`.
+    ``dates`` maps game ids to game dates; ``production``, ``box`` and ``luck`` are as in :func:`ratings_before`.
     """
     game_dates = stints["game_id"].map(dates)
     earlier = stints["season"].between(season - window, season - 1)
     so_far = (stints["season"] == season) & (game_dates < as_of)
     seasons = list(range(season - window, season + 1))
-    return _fit(stints[earlier | so_far], alpha, recency_weights(seasons, half_life), production)
+    return _fit(stints[earlier | so_far], alpha, recency_weights(seasons, half_life), production, box, luck)
 
 
 def rating_schedule(stints: pd.DataFrame, dates: pd.Series, seasons: Sequence[int],
-                    every_days: int = 30, production: pd.DataFrame | None = None) -> pd.DataFrame:
+                    every_days: int = 30, production: pd.DataFrame | None = None,
+                    box: pd.DataFrame | None = None, luck: bool = False) -> pd.DataFrame:
     """Ratings refreshed every ``every_days`` days through each season, each from earlier games only.
 
     Returns a long table with ``season`` and ``as_of`` (first date the ratings
@@ -212,7 +337,7 @@ def rating_schedule(stints: pd.DataFrame, dates: pd.Series, seasons: Sequence[in
         if played.empty:
             continue
         for as_of in pd.date_range(played.min(), played.max(), freq=f"{every_days}D"):
-            ratings = ratings_as_of(stints, dates, season, as_of, production=production)
+            ratings = ratings_as_of(stints, dates, season, as_of, production=production, box=box, luck=luck)
             parts.append(ratings.assign(season=season, as_of=as_of))
     return pd.concat(parts, ignore_index=True)
 

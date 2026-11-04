@@ -8,11 +8,18 @@ single event can't be seen; such periods (fewer than 1 in 100) are skipped.
 A stint is a stretch of play with the same ten players on the court. For
 each stint the builder records the score change and each side's estimated
 possessions, ``FGA + 0.44 FTA - OREB + TOV``.
+
+For luck-adjusted ratings it also records threes and free throws, made and
+expected: ``xfg3m`` and ``xftm`` add up each shooter's 3-point and
+free-throw percentage over his attempts. A shooter's percentages come from
+the other half of the season's games (odd or even game ids), padded with
+league-average attempts, so that a stint's own shots never set the
+expectation. End-of-period heaves count as they actually went.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +41,13 @@ ON_COURT_SLOTS = {
     pbp.FOUL: (1, 2),          # fouler, fouled player
     JUMP_BALL: (1, 2, 3),
 }
-STAT_KEYS = ("pts", "fga", "fta", "oreb", "tov")
+STAT_KEYS = ("pts", "fga", "fta", "oreb", "tov", "fg3a", "fg3m", "ftm", "xfg3m", "xftm")
+# League-average attempts added to a shooter's 3-point and free-throw record.
+THREE_PAD = 450.0
+FT_PAD = 24.0
+# Threes taken with this many seconds or fewer left in a period are heaves.
+HEAVE_SECONDS = 2
+LEAGUE_SHOOTING = (0.36, 0.77)
 
 
 def _clock(text: str) -> int:
@@ -53,8 +66,14 @@ def _is_player(value) -> bool:
     return isinstance(value, (int, np.integer)) and 0 < value < 1_610_000_000
 
 
-def game_stints(game: pd.DataFrame, home: str) -> tuple[list[dict], int, int]:
-    """Stints of one game. Returns the stints, periods used and periods skipped."""
+def game_stints(game: pd.DataFrame, home: str,
+                shooting: Mapping[int, tuple[float, float]] | None = None) -> tuple[list[dict], int, int]:
+    """Stints of one game. Returns the stints, periods used and periods skipped.
+
+    ``shooting`` maps player ids to their (3-point, free-throw) percentage for
+    the expected makes; players missing from it shoot :data:`LEAGUE_SHOOTING`.
+    """
+    shooting = shooting or {}
     rows = game[["PERIOD", "EVENTMSGTYPE", "EVENTMSGACTIONTYPE", "PCTIMESTRING", "SCORE",
                  "HOMEDESCRIPTION", "VISITORDESCRIPTION",
                  "PLAYER1_ID", "PLAYER1_TEAM_ABBREVIATION", "PLAYER2_ID", "PLAYER2_TEAM_ABBREVIATION",
@@ -128,12 +147,21 @@ def game_stints(game: pd.DataFrame, home: str) -> tuple[list[dict], int, int]:
                 side = "home" if isinstance(hdesc, str) else "away"
             if kind in (pbp.MADE_SHOT, pbp.MISSED_SHOT):
                 cur[f"{side}_fga"] += 1
+                if "3PT" in f"{hdesc} {vdesc}":
+                    made = float(kind == pbp.MADE_SHOT)
+                    cur[f"{side}_fg3a"] += 1
+                    cur[f"{side}_fg3m"] += made
+                    cur[f"{side}_xfg3m"] += (made if clock <= HEAVE_SECONDS
+                                             else shooting.get(p1, LEAGUE_SHOOTING)[0])
             if kind == pbp.MISSED_SHOT:
                 last_miss = side
             elif kind == pbp.FREE_THROW:
                 cur[f"{side}_fta"] += 1
+                cur[f"{side}_xftm"] += shooting.get(p1, LEAGUE_SHOOTING)[1]
                 if "MISS" in f"{hdesc} {vdesc}":
                     last_miss = side
+                else:
+                    cur[f"{side}_ftm"] += 1
             elif kind == pbp.REBOUND:
                 if _is_player(p1) and side == last_miss:
                     cur[f"{side}_oreb"] += 1
@@ -168,11 +196,12 @@ def season_stints(season: int, data_dir: str | Path = "data/pbp") -> pd.DataFram
     for col in ("PLAYER1_ID", "PLAYER2_ID", "PLAYER3_ID"):
         events[col] = pd.to_numeric(events[col], errors="coerce").fillna(0).astype(np.int64)
     homes = _home_teams(events)
+    shooting = shooting_rates(events)
     rows, used, skipped = [], 0, 0
     for game_id, game in events.groupby("GAME_ID", sort=False):
         if game_id not in homes:
             continue
-        stints, u, s = game_stints(game, homes[game_id])
+        stints, u, s = game_stints(game, homes[game_id], shooting[int(game_id) % 2])
         used, skipped = used + u, skipped + s
         for st in stints:
             st["game_id"] = game_id
@@ -187,6 +216,43 @@ def season_stints(season: int, data_dir: str | Path = "data/pbp") -> pd.DataFram
                                - out[f"{side}_oreb"] + out[f"{side}_tov"])
     out.attrs["periods_used"], out.attrs["periods_skipped"] = used, skipped
     return out
+
+
+def shooting_rates(events: pd.DataFrame) -> dict[int, dict[int, tuple[float, float]]]:
+    """Each shooter's padded (3-point, free-throw) percentage, for games with odd and even ids.
+
+    The rates for odd games come from the shooter's attempts in even games and
+    the other way around; heaves are left out.
+    """
+    text = events["HOMEDESCRIPTION"].fillna("") + " " + events["VISITORDESCRIPTION"].fillna("")
+    kind = events["EVENTMSGTYPE"]
+    clock = events["PCTIMESTRING"].map(_clock)
+    three = kind.isin([pbp.MADE_SHOT, pbp.MISSED_SHOT]) & text.str.contains("3PT") & (clock > HEAVE_SECONDS)
+    ft = kind == pbp.FREE_THROW
+    frames = {
+        "3": pd.DataFrame({"made": (kind == pbp.MADE_SHOT)[three].astype(float)}),
+        "ft": pd.DataFrame({"made": (~text.str.contains("MISS"))[ft].astype(float)}),
+    }
+    rates: dict[int, dict] = {0: {}, 1: {}}
+    tables = {}
+    for name, frame in frames.items():
+        rows = events.loc[frame.index]
+        frame = frame.assign(player=rows["PLAYER1_ID"].to_numpy(), half=(rows["GAME_ID"].astype(np.int64) % 2).to_numpy())
+        league = frame["made"].mean() if len(frame) else LEAGUE_SHOOTING[name == "ft"]
+        pad = THREE_PAD if name == "3" else FT_PAD
+        counts = frame.groupby(["player", "half"])["made"].agg(["sum", "count"]).unstack("half", fill_value=0.0)
+        for half in (0, 1):
+            other = 1 - half
+            made = counts["sum"].get(other, 0.0)
+            att = counts["count"].get(other, 0.0)
+            tables[(name, half)] = ((made + pad * league) / (att + pad), league)
+    for half in (0, 1):
+        threes, league3 = tables[("3", half)]
+        fts, league_ft = tables[("ft", half)]
+        players = threes.index.union(fts.index)
+        threes, fts = threes.reindex(players).fillna(league3), fts.reindex(players).fillna(league_ft)
+        rates[half] = {int(pid): (float(a), float(b)) for pid, a, b in zip(players, threes, fts)}
+    return rates
 
 
 def build_stints(seasons: Iterable[int], data_dir: str | Path = "data/pbp") -> pd.DataFrame:

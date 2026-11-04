@@ -8,7 +8,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
-| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), from who is on the court |
+| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
 
 ## Installation
 
@@ -19,11 +19,10 @@ pip install -e . pytest
 
 ### Data
 
-Download the Kaggle dataset [NBA Stats (1947-present)](https://www.kaggle.com/datasets/sumitrodatta/nba-aba-baa-stats) and put `Advanced.csv` in `data/`.
+Download `Advanced.csv` from the Kaggle dataset [NBA Stats (1947-present)](https://www.kaggle.com/datasets/sumitrodatta/nba-aba-baa-stats), or from its GitHub source, and put it in `data/`:
 
 ```bash
-# with the Kaggle CLI (kaggle.json configured)
-kaggle datasets download sumitrodatta/nba-aba-baa-stats -f Advanced.csv -p data --unzip
+curl -L -o data/Advanced.csv https://raw.githubusercontent.com/sumitrodatta/bball-reference-datasets/master/Data/Advanced.csv
 ```
 
 Play-by-play and shot charts come from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. Game predictions, player impact and play-by-play style use these files. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season). The 2025-26 play-by-play only exists there in the cdn.nba.com format, so it is converted to the stats.nba.com layout on download. On 2024-25, where both formats exist, the converted data gives the same final score in 1,229 of 1,230 games and box-score totals within 0.3%.
@@ -233,55 +232,79 @@ Play-by-play style is a much stronger fingerprint than box-score rates. Compress
 
 ## Player impact (RAPM)
 
-How many points does a player add to his team per 100 possessions, once you account for who he shares the court with? Regularized adjusted plus-minus (RAPM) answers it from the play-by-play alone.
+How many points does a player add to his team per 100 possessions, once you account for who he shares the court with? Regularized adjusted plus-minus (RAPM) answers it from the play-by-play, helped by the box score, the draft and age.
 
 ### Method
 
 1. **Who is on the court.** The play-by-play lists substitutions but not who starts each quarter, so the starters of a quarter are the players whose first appearance in it isn't being subbed in. This works for 99.7% of quarters; the rest (a player who never touches the ball for a whole quarter) are skipped. Events are kept in file order, because event numbers are often out of order around substitutions.
 2. **Stints.** Each stretch with the same ten players gives the points each team scored and its possessions (`FGA + 0.44 FTA - OREB + TOV`). That's 853,000 stints from 2012-13 to 2025-26.
 3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward a prior, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
-4. **Box-score prior.** Plain RAPM shrinks everyone toward average. Here each player is shrunk toward a box-score estimate instead: his production (points + assists + rebounds + steals + blocks - turnovers) per 100 possessions, mapped to the rating scale by regressing plain RAPM on it. The prior is split evenly between offense and defense, so the total is more reliable than the offense/defense split.
-5. **Tuning.** The shrinkage (`alpha = 4000`), the window, the prior's own shrinkage (300 possessions) and the rating of unrated players (rookies, -1.5) were chosen on 2015-16 to 2018-19 only, by how well each season's ratings explain the next season's game margins.
+4. **Offense and defense box-score priors.** Each player is shrunk toward a box-score estimate of his offensive and of his defensive rating instead of toward average. Box scores come from the play-by-play (rebounds split into offensive and defensive by the team of the last miss). His per-100-possession rates of 2- and 3-point makes and attempts, free throws, assists, offensive rebounds, turnovers and fouls drawn on offense, and of defensive rebounds, steals, blocks and fouls on defense, plus his minutes per game, are mapped to the rating scale by regressing plain offensive and defensive RAPM on them (every rate is available to both). With a better prior, RAPM leans on it more (`alpha = 8000` instead of 4000). Shot zones and the share of assisted baskets added nothing.
+5. **Luck adjustment.** Free throws count as the shooter's expected makes, and for the defensive ratings the opponents' threes count as expected makes too: a defense has little control over whether open threes go in, and opponent 3-point percentage takes thousands of attempts to mean anything. Each shooter's percentages come from the other half of the season's games, padded with 450 league-average threes and 24 free throws. Offense keeps its actual threes, since shooting is a skill. This is the recipe of [OpenRAPM](https://github.com/bbstats/openrapm).
+6. **Forecast for the next season.** Ratings describe the past. To forecast, three corrections are learned each season from the earlier ones (the margin of every stint that last season's ratings leave unexplained, regressed on player features): players without a rating get a value from their draft pick and age, players rated from few possessions are moved down (`possessions / (possessions + 1000)`), and young players up and old ones down. Learned through 2025-26: a 19-year-old first pick is worth -0.7, a 20-year-old 10th pick -2.3 and an undrafted 23-year-old -2.6, but an undrafted 27-year-old (often a veteran of another league) -0.6; a player rated from 300 possessions loses 1.6 points and one rated from 8,000 gains 0.6; a 21-year-old gains 1.3 points on a 33-year-old. Draft picks, birth dates and NBA.com-to-Basketball-Reference ids come from public GitHub mirrors ([sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets), [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data)), downloaded into `data/bref/` on first use.
+7. **Tuning.** The shrinkage, the window, the prior's features and shrinkage (300 possessions), the share of 3-point luck removed and the rating of unrated players (-1.5) were chosen on 2015-16 to 2018-19, by how well each season's ratings explain the next season's game margins. The forecast's features were picked after looking at every season, so its edge in the tables below is a little optimistic.
 
 ### Usage
 
 ```bash
-basketball-ml impact                      # leaderboard over the last two seasons
+basketball-ml impact                      # leaderboard over the last two seasons, with next season's forecast
 basketball-ml impact "Victor Wembanyama"  # one player, with his rank
 basketball-ml impact --season 2016 --top 5
-basketball-ml impact-backtest             # RAPM vs simpler ratings, season by season
+basketball-ml impact-backtest             # every rating method, season by season
+basketball-ml impact-export               # forecasts for every season, as season,nba_id,rating
+basketball-ml impact-bench                # score the forecasts on the Hoop Impact Bench test
 ```
 
 2024-25 and 2025-26, players with 3,000+ offensive possessions:
 
-| | Player | Offense | Defense | RAPM |
-| --- | --- | --- | --- | --- |
-| 1 | Shai Gilgeous-Alexander | +6.6 | +3.0 | +9.6 |
-| 2 | Nikola Jokić | +7.4 | +1.2 | +8.6 |
-| 3 | Victor Wembanyama | +3.2 | +5.3 | +8.5 |
-| 4 | Giannis Antetokounmpo | +5.6 | +2.3 | +7.9 |
-| 5 | Kawhi Leonard | +4.8 | +2.2 | +7.0 |
-| 6 | Chet Holmgren | +2.1 | +3.7 | +5.9 |
-| 7 | Luka Dončić | +4.8 | +0.9 | +5.7 |
-| 8 | Derrick White | +2.1 | +3.1 | +5.2 |
-| 9 | Jarrett Allen | +3.1 | +1.8 | +4.9 |
-| 10 | Neemias Queta | +1.5 | +3.2 | +4.7 |
+| | Player | Offense | Defense | RAPM | 2026-27 forecast |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Nikola Jokić | +7.3 | +1.2 | +8.4 | +8.5 |
+| 2 | Shai Gilgeous-Alexander | +6.7 | +1.6 | +8.3 | +8.8 |
+| 3 | Victor Wembanyama | +2.3 | +5.0 | +7.3 | +8.3 |
+| 4 | Giannis Antetokounmpo | +5.3 | +0.7 | +6.0 | +5.9 |
+| 5 | Kawhi Leonard | +4.6 | +1.2 | +5.8 | +5.4 |
+| 6 | Luka Dončić | +5.1 | +0.3 | +5.4 | +5.9 |
+| 7 | Donovan Mitchell | +3.9 | +0.7 | +4.6 | +4.8 |
+| 8 | Tyrese Haliburton | +4.1 | +0.4 | +4.5 | +4.9 |
+| 9 | Chet Holmgren | +1.4 | +3.1 | +4.5 | +5.2 |
+| 10 | Jarrett Allen | +2.6 | +1.8 | +4.3 | +4.7 |
 
-The 2014-15 and 2015-16 top 5 is Stephen Curry, LeBron James, Draymond Green, Kawhi Leonard and Chris Paul. Defensive players (Derrick White, Neemias Queta) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample.
+Defensive players (Wembanyama, Holmgren, Derrick White, Alex Caruso) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample. The forecast moves young players up (Wembanyama, Holmgren, Ausar Thompson) and older ones down (Stephen Curry, Jimmy Butler, Kawhi Leonard).
 
 ### Does it work?
 
 Ratings from the two previous seasons, applied to the players actually on the court in each stint, explain this share of the variance of every game's final margin (2015-16 to 2025-26, 13,206 games):
 
-| Rating | Margin explained |
-| --- | --- |
-| **RAPM with the box-score prior** | **15.4%** |
-| RAPM shrunk toward average | 14.6% |
-| Box-score production per game | 12.0% |
-| Raw on-court net rating | 11.3% |
-| Adjusted plus-minus without shrinkage | 11.1% |
+| Rating | Margin explained | Best in |
+| --- | --- | --- |
+| **Forecast: RAPM + rookies, playing time and age** | **17.8%** | 9 of 11 seasons |
+| RAPM, offense/defense box-score prior, luck-adjusted | 16.8% | 2 |
+| RAPM, offense/defense box-score prior | 16.4% | |
+| RAPM, one box-score production prior (previous version) | 15.4% | |
+| RAPM shrunk toward average | 14.6% | |
+| Box-score production per game | 12.0% | |
+| Raw on-court net rating | 11.3% | |
+| Adjusted plus-minus without shrinkage | 11.1% | |
 
-RAPM with the box-score prior is the best rating in 10 of the 11 seasons; box-score production alone wins 2020-21, played mostly without fans. The prior helps in every season, most in 2025-26 (13.5% to 15.7%). Most of the rest of the variance is game-to-game noise: shooting luck, matchups and effort. In game predictions, RAPM and box-score strength carry different information, and using both, with ratings refreshed monthly, is what lifts accuracy to 67.1%.
+Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck adjustment in 9 of 11 and the forecast in 9 of 11. The forecast's corrections are learned from earlier seasons only, so they are weak in the first test seasons (learned from one to three seasons) and worth about 2 points from 2020-21 on.
+
+**Against public metrics.** [Hoop Impact Bench](https://github.com/lumahoops/hoop-impact-bench) scores public impact metrics on the same test: preseason ratings weighted by the minutes players actually played, 7,230 games from 2020-21 to 2025-26. Under its "established players" rule, everyone with fewer than 250 minutes the season before counts as -2.0; the "full forecast" uses each metric's own values for rookies too:
+
+| Metric | Established players | Full forecast |
+| --- | --- | --- |
+| **basketball_ml forecast** | **.182** | .188 |
+| LOKI | .170 | **.196** |
+| Pulse | .171 | .177 |
+| OpenRAPM | .162 | .171 |
+| xRAPM | .161 | .169 |
+| LEBRON | .159 | .154 |
+| EPM | .157 | .178 |
+| DARKO | .155 | .159 |
+| BPM (Basketball-Reference) | .154 | .154 |
+| Last season's plain RAPM | .141 | .133 |
+
+Other metrics' numbers are the benchmark's published v1.1.0 results. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise, so on established players the forecast is ahead of every published metric; with rookies counted, LOKI's newcomer values are better than ours.
 
 ## Project layout
 
@@ -311,9 +334,12 @@ src/basketball_ml/
 │   ├── archetypes.py  # k-means archetypes and the style map
 │   └── cli.py         # basketball-ml style-twins / archetypes / style-backtest
 └── impact/
-    ├── stints.py      # who is on the court, stint by stint
-    ├── rapm.py        # ridge-regression player ratings and their backtest
-    └── cli.py         # basketball-ml impact / impact-backtest
+    ├── stints.py      # who is on the court, stint by stint, with expected threes and free throws
+    ├── box.py         # per-game box scores from the play-by-play
+    ├── rapm.py        # ridge-regression ratings, box-score priors, luck adjustment and backtest
+    ├── projection.py  # next-season forecast: rookies by draft pick and age, playing time, aging
+    ├── bench.py       # the Hoop Impact Bench game-margin test
+    └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
 tests/
 ```
 
@@ -327,5 +353,5 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **A richer box-score prior** for RAPM: separate offense and defense estimates from shooting efficiency, rebounding and defensive events instead of one production number.
+- **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.

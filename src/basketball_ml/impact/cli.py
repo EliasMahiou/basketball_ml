@@ -9,7 +9,7 @@ import pandas as pd
 
 from .. import pbp
 from ..cache import cached_csv
-from .rapm import DEFAULT_WINDOW, backtest, ratings_before
+from .rapm import DEFAULT_WINDOW, backtest, rating_schedule, ratings_before
 from .stints import build_stints
 
 
@@ -95,6 +95,18 @@ def load_before(data_dir: str | Path, first: int, last: int) -> dict[int, pd.Dat
     return {int(t): g.drop(columns="season").reset_index(drop=True) for t, g in table.groupby("season")}
 
 
+def load_projection(data_dir: str | Path, bio_dir: str | Path, first: int, last: int) -> pd.DataFrame:
+    """Projection coefficients for every season from ``first + 3`` to ``last + 1``, cached in ``data_dir``."""
+    from .projection import load_bio, projection_coefficients
+
+    def build() -> pd.DataFrame:
+        stints = load_stints(data_dir, first, last)
+        before = load_before(data_dir, first, last)
+        return projection_coefficients(stints, before, load_bio(bio_dir), range(first + 3, last + 2)).reset_index()
+
+    return cached_csv(Path(data_dir) / f"rapm_projection_{first}_{last}.csv", build).set_index("season")
+
+
 def load_forecasts(data_dir: str | Path, bio_dir: str | Path, first: int, last: int) -> pd.DataFrame:
     """Preseason forecast ratings for every season from ``first + 3`` to ``last + 1``, cached in ``data_dir``."""
     from .projection import load_bio, preseason_ratings
@@ -102,9 +114,26 @@ def load_forecasts(data_dir: str | Path, bio_dir: str | Path, first: int, last: 
     def build() -> pd.DataFrame:
         stints = load_stints(data_dir, first, last)
         before = load_before(data_dir, first, last)
-        return preseason_ratings(stints, before, load_bio(bio_dir), range(first + 3, last + 2))
+        return preseason_ratings(stints, before, load_bio(bio_dir), range(first + 3, last + 2),
+                                 coefficients=load_projection(data_dir, bio_dir, first, last))
 
     return cached_csv(Path(data_dir) / f"rapm_forecast_{first}_{last}.csv", build)
+
+
+def load_schedule(data_dir: str | Path, bio_dir: str | Path, first: int, last: int, dates: pd.Series) -> pd.DataFrame:
+    """In-season forecast ratings of every season from ``first + 1`` to ``last``, refreshed every 30 days.
+
+    Each refresh is fitted from the games before it (with the offense/defense
+    box-score prior and the luck adjustment) and the projection is added (see
+    :func:`basketball_ml.impact.projection.project_schedule`). ``dates`` maps
+    game ids to dates. The ratings are cached in ``data_dir``.
+    """
+    from .projection import load_bio, project_schedule
+
+    stints = load_stints(data_dir, first, last)
+    schedule = cached_csv(Path(data_dir) / f"rapm_schedule_{first}_{last}.csv", parse_dates=["as_of"], build=lambda: (
+        rating_schedule(stints, dates, range(first + 1, last + 1), box=load_box(data_dir, first, last), luck=True)))
+    return project_schedule(schedule, stints, load_bio(bio_dir), load_projection(data_dir, bio_dir, first, last))
 
 
 def _span(first: int, last: int) -> str:

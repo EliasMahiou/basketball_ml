@@ -169,24 +169,65 @@ def project(ratings: pd.DataFrame, season: int, bio: pd.DataFrame, coef: pd.Seri
     return out
 
 
+def projection_coefficients(stints: pd.DataFrame, before: Mapping[int, pd.DataFrame], bio: pd.DataFrame,
+                            seasons: Iterable[int], first: int | None = None) -> pd.DataFrame:
+    """The projection's coefficients for each of ``seasons`` (one row per season, columns :data:`FEATURES`).
+
+    The row of season t is learned from the seasons from ``first`` (default:
+    the earliest in ``before``) to t - 1 that have stints; seasons with none
+    are left out.
+    """
+    first = min(before) if first is None else first
+    played = set(stints["season"])
+    rows = {}
+    for season in seasons:
+        earlier = [s for s in range(first, season) if s in before and s in played]
+        if earlier:
+            rows[season] = fit_projection(stints, before, bio, earlier)
+    return pd.DataFrame(rows, index=list(FEATURES)).T.rename_axis("season")
+
+
 def preseason_ratings(stints: pd.DataFrame, before: Mapping[int, pd.DataFrame], bio: pd.DataFrame,
-                      seasons: Iterable[int], first: int | None = None) -> pd.DataFrame:
+                      seasons: Iterable[int], first: int | None = None,
+                      coefficients: pd.DataFrame | None = None) -> pd.DataFrame:
     """Forecast ratings for each of ``seasons`` from data before it only.
 
     ``before`` maps seasons to the ratings fitted before them (see
     :func:`basketball_ml.impact.ratings_before`); the projection for season t
     is learned from the seasons from ``first`` (default: the earliest in
-    ``before``) to t - 1. Every player of season t's stints gets a row; for a
-    season not played yet, the rookies of the draft before it do.
+    ``before``) to t - 1, unless ``coefficients`` (from
+    :func:`projection_coefficients`) are given. Every player of season t's
+    stints gets a row; for a season not played yet, the rookies of the draft
+    before it do.
     """
-    first = min(before) if first is None else first
+    seasons = [s for s in seasons if s in before]
+    if coefficients is None:
+        coefficients = projection_coefficients(stints, before, bio, seasons, first)
     parts = []
     for season in seasons:
-        earlier = [s for s in range(first, season) if s in before and (stints["season"] == s).any()]
-        if season not in before or not earlier:
+        if season not in coefficients.index:
             continue
-        coef = fit_projection(stints, before, bio, earlier)
         played = stints[stints["season"] == season]
         players = _players(played) if len(played) else bio.index[bio["draft_year"] == season - 1]
-        parts.append(project(before[season], season, bio, coef, players).assign(season=season))
+        parts.append(project(before[season], season, bio, coefficients.loc[season], players).assign(season=season))
+    return pd.concat(parts, ignore_index=True)
+
+
+def project_schedule(schedule: pd.DataFrame, stints: pd.DataFrame, bio: pd.DataFrame,
+                     coefficients: pd.DataFrame) -> pd.DataFrame:
+    """In-season ratings (see :func:`basketball_ml.impact.rating_schedule`) with the projection added.
+
+    Each refresh of season t gets season t's coefficients, learned from
+    earlier seasons only, and rows for the season's players it doesn't rate
+    yet. Seasons without coefficients are left as they are.
+    """
+    parts = []
+    for season, group in schedule.groupby("season"):
+        if season not in coefficients.index:
+            parts.append(group)
+            continue
+        players = _players(stints[stints["season"] == season])
+        for as_of, ratings in group.groupby("as_of"):
+            projected = project(ratings.drop(columns=["season", "as_of"]), season, bio, coefficients.loc[season], players)
+            parts.append(projected.assign(season=season, as_of=as_of))
     return pd.concat(parts, ignore_index=True)

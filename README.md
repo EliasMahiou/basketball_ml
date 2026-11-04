@@ -6,9 +6,10 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | --- | --- | --- |
 | [`twins`](#statistical-twins) | Ready | Finds a player's "statistical twin" for a season or a whole career, across every era |
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
-| [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays |
+| [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays, benchmarked against closing betting lines, and live for the season in progress |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 | [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
+| [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team |
 
 ## Installation
 
@@ -26,6 +27,13 @@ curl -L -o data/Advanced.csv https://raw.githubusercontent.com/sumitrodatta/bbal
 ```
 
 Play-by-play and shot charts come from the public GitHub repository [shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), which covers every season since 1996-97. Game predictions, player impact and play-by-play style use these files. They download automatically into `data/pbp/` the first time they are needed (about 140 MB per season). The 2025-26 play-by-play only exists there in the cdn.nba.com format, so it is converted to the stats.nba.com layout on download. On 2024-25, where both formats exist, the converted data gives the same final score in 1,229 of 1,230 games and box-score totals within 0.3%.
+
+Other public sources, also downloaded on first use:
+
+- **Draft picks, birth dates and player ids**: [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets) and the NBA.com to Basketball-Reference id table of [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data), into `data/bref/` (impact forecast).
+- **Hoop Impact Bench**: games and minutes of [lumahoops/hoop-impact-bench](https://github.com/lumahoops/hoop-impact-bench) (CC BY 4.0), into `data/bench/`.
+- **Closing betting lines**: [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), into `data/odds/` (market benchmark).
+- **The season in progress**: the NBA's live feed (schedule, box scores and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`.
 
 ## Statistical twins
 
@@ -139,24 +147,27 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
 
 ### Method
 
-1. **Games**: final scores are the highest score reached in each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2025-26 (16,895 games).
+1. **Games**: final scores are the highest score reached in each game's play-by-play, and dates and home and away teams come from the shot charts. Regular season only, from 2012-13 to 2025-26 (16,895 games). The season in progress comes from the NBA's live feed (see [below](#the-season-in-progress)).
 2. **Pre-game features**, computed only from earlier games:
     - **Elo** with a margin-of-victory multiplier and 25% regression to the mean between seasons, as in FiveThirtyEight's model. Its 100-point home edge is lowered to 60, because home teams win less often than they used to (about 59% of games until 2018-19, about 55% since).
     - **Form**: average margin over each team's last 10 games
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
     - **Lineup strength**: who actually played. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games. A team's strength is the sum over its 10 best players in the game. Who plays is known shortly before tip-off from injury reports, so the backtest treats it as known.
-    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons.
+    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons, with the offense and defense box-score prior, the luck adjustment and the forecast layer (rookies by draft pick and age, playing time, aging).
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
 
 ```bash
-basketball-ml predict SAS OKC                 # SAS (home) vs OKC: SAS 55%, OKC 45%
-basketball-ml predict SAS OKC --out-home "Victor Wembanyama"   # SAS drops to 43%
+basketball-ml tonight                         # today's games of the season in progress, next to the sportsbooks
+basketball-ml tonight --date 2026-11-06 --out "Joel Embiid"   # another day, without injured players
+basketball-ml predict SAS OKC --live          # any matchup, with the season in progress
+basketball-ml predict SAS OKC                 # SAS (home) vs OKC at the end of 2025-26: SAS 56%, OKC 44%
+basketball-ml predict SAS OKC --out-home "Victor Wembanyama"   # SAS drops to 44%
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
-basketball-ml games-backtest --calibration docs/calibration.png      # walk-forward evaluation
+basketball-ml games-backtest --market --calibration docs/calibration.png   # walk-forward evaluation
 ```
 
 ### Backtest
@@ -169,10 +180,10 @@ Out of sample from 2017-18 to 2025-26 (10,746 games), with each season predicted
 | Elo alone | 65.1% | 0.622 | 0.217 |
 | Logistic regression, without lineups | 65.6% | 0.620 | 0.216 |
 | Logistic regression, with lineup strength | 66.2% | 0.612 | 0.212 |
-| **Logistic regression, with lineup strength and impact** | **67.1%** | **0.606** | **0.209** |
-| Gradient boosting, same features | 67.0% | 0.607 | 0.210 |
+| **Logistic regression, with lineup strength and impact** | **67.4%** | **0.603** | **0.208** |
+| Gradient boosting, same features | 67.3% | 0.605 | 0.209 |
 
-Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6090, both 0.6058. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (69.0% accuracy, log loss 0.581), and 2020-21 the least (64.2%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used.
+Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6040, both 0.6027. The better player ratings of the [impact module](#player-impact-rapm) (offense and defense prior, luck adjustment, forecast layer) cut the log loss from 0.6058 to 0.6027 and raised accuracy from 67.1% to 67.4%. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (70.7% accuracy, log loss 0.573), and 2020-21 the least accurate (65.0%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used. Neither did travel: the distance each team flew since its previous game, time zones crossed, consecutive road games and the altitude of Denver and Utah together moved the log loss by 0.0002.
 
 ### Calibration
 
@@ -180,7 +191,39 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of about 2 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6058 to 0.6050), so it isn't used.
+Both models track the diagonal, with an average gap of 1.6 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6058 to 0.6050), so it isn't used.
+
+### Against the betting market
+
+Closing betting lines are the hardest benchmark: they know everything public before tip-off, injuries included. `games-backtest --market` scores the model against the closing moneylines of Sportsbook Review, from the public file of [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), with the bookmaker's margin removed. They cover 10,054 of the 10,746 test games (2025-26 only until January 7):
+
+| | Accuracy | Log loss | Brier score |
+| --- | --- | --- | --- |
+| Closing line | 67.5% | 0.6007 | 0.2070 |
+| Model | 67.0% | 0.6072 | 0.2098 |
+| Model given the closing line as one more feature | 67.6% | 0.5999 | 0.2066 |
+
+The market is better in every season, by 0.0066 in log loss (paired standard error 0.0014). When the two disagree by more than 10 points, the market is almost always right: in the 781 games where the model gave the home team 10+ points more than the line (58% against 44% on average), the home team won 45%. Most of those gaps are likely what a box score can't see, such as minutes limits, rest decisions and late scratches. The model does add a little to the line: with the line's log-odds as a feature, it beats the line alone in 7 of 9 seasons, by 0.0007 in log loss (standard error 0.0006), too small to be sure of.
+
+### The season in progress
+
+The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score, and today's odds from several sportsbooks). `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and rate players with the preseason forecast of the [impact module](#player-impact-rapm), with draft-pick and age values for every newcomer. Box scores are cached in `data/live/`.
+
+Through November 2, 2026, the 107 games of 2026-27 predicted that way (from the games before each one, with the players who played) went 66.4% right with a log loss of 0.582; Elo alone was 60.7% right (log loss 0.634). On November 4, 2026:
+
+```
+          home win sportsbooks   elo lineup impact rest
+game
+PHI @ DET      69%         56%  +189          +2.7   +0
+ATL @ WAS      34%         42%  -157          -5.7   +0
+MIL @ BOS      89%         80%  +362          +9.9   +0
+CHI @ NYK      84%         82%  +295          +6.8   +0
+DAL @ SAS      89%         83%  +305         +12.0   +0
+LAL @ SAC      15%         17%  -186         -12.0   +0
+MIA @ LAC      43%         34%   +53          -4.9   +0
+```
+
+The model can't see injuries announced before a game: list players who won't play with `--out`.
 
 ## Play-by-play style
 
@@ -306,6 +349,91 @@ Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck
 
 Other metrics' numbers are the benchmark's published v1.1.0 results. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise, so on established players the forecast is ahead of every published metric; with rookies counted, LOKI's newcomer values are better than ours.
 
+## Shot quality (expected FG%)
+
+![Expected FG% by location](docs/xfg_court.png)
+
+Two players can both shoot 47%, one on layups and the other on step-back threes. Expected FG% (xFG) is the chance that an average NBA shooter makes a shot, judged from the shot alone. Actual points minus expected points is shot making.
+
+### Method
+
+1. **Shots**: every field goal attempt in the shot charts since 2012-13, 2.9 million in all.
+2. **Features**: only the shot, never the shooter.
+    - Distance, location and angle, 2 or 3, and the three NBA zone fields.
+    - The shot type (`ACTION_TYPE`); labels with fewer than 200 attempts are grouped as "other".
+    - Period, seconds left, and an end-of-period heave flag (30+ feet with 3 seconds or less left).
+    - The shooting team's lead before the shot, from the play-by-play (matched for 99.98% of shots).
+3. **No result in the labels**: "bank" is dropped from shot types, because scorers mostly call a shot a bank shot when it goes in. Bank shots from 3 to 25 feet go in 11 to 19 points more often than other shots from the same distance. Labels renamed in 2015-16 ("Slam Dunk", "Tip Shot") are merged.
+4. **Model**: gradient boosting with native categorical splits. Each season from 2015-16 to 2025-26 is predicted by a model trained on the 3 seasons before it, so every xFG is out of sample.
+5. **Shot making**: points per shot minus expected points per shot (xFG × 2 or 3).
+    - xFG is first set to each season's league level, separately for twos and threes, because 2-point accuracy has risen almost every season.
+    - Twos are also corrected for each arena's scorekeeper bias. Some arenas log shots farther from the rim than they were, so twos there go in more often for both teams. The bias, estimated from home-minus-road gaps, ranges from -7 to +6 FG% points in 2025-26; Utah, Golden State and Sacramento are highest.
+    - Each player's rate is shrunk toward 0 by the noise of his sample (empirical Bayes). Half of the observed spread is skill at about 270 attempts.
+6. **Teams**: shot quality is the average expected points per shot (xPPS) of a team's attempts, and, on defense, of its opponents' attempts.
+
+### Usage
+
+```bash
+basketball-ml xfg-backtest --chart docs/xfg_court.png   # walk-forward evaluation, calibration, chart
+basketball-ml shot-making                                # best shot makers of 2025-26
+basketball-ml shot-making "Stephen Curry"                # one player, season by season
+basketball-ml shot-making --persistence                  # is shot making a skill?
+basketball-ml shot-quality --season 2026                 # teams, offense and defense
+```
+
+The first run takes about 10 minutes. It caches the out-of-sample predictions for all 2.3 million shots in `data/pbp/xfg_predictions_2013_2026.csv`; after that every command takes a few seconds.
+
+2025-26, players with 300+ attempts:
+
+| | Player | FGA | FG% | xFG% | Points added | Per 100 shots (shrunk) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Nikola Jokić | 1,132 | 56.9% | 46.6% | +243 | +17.5 |
+| 2 | Luke Kennard | 443 | 53.3% | 43.3% | +115 | +14.9 |
+| 3 | Shai Gilgeous-Alexander | 1,321 | 55.3% | 47.1% | +230 | +14.6 |
+| 4 | Kevin Durant | 1,376 | 52.0% | 44.3% | +239 | +14.5 |
+| 5 | Jakob Poeltl | 310 | 70.0% | 59.8% | +63 | +13.0 |
+| 6 | Jamal Murray | 1,360 | 48.3% | 42.3% | +213 | +12.9 |
+| 7 | Cam Spencer | 556 | 47.3% | 40.0% | +112 | +12.5 |
+| 8 | Luka Dončić | 1,457 | 47.6% | 41.8% | +184 | +10.4 |
+| 9 | Bobby Portis | 750 | 48.8% | 43.6% | +105 | +10.0 |
+| 10 | Kon Knueppel | 1,084 | 47.5% | 42.9% | +142 | +10.0 |
+
+Teams: Oklahoma City had the best net in 2025-26, scoring 1.12 points per shot on shots worth 1.10 and allowing 1.04 on shots worth 1.07. Denver had the best offense (1.15 points per shot) on below-average shots (1.07 expected), thanks to the most shot making in the league (+0.08 per shot). Across 2015-16 to 2025-26, about a quarter of the spread in teams' points per shot comes from shot quality and three quarters from shot making, on offense (24%) and on defense (26%).
+
+### Does it work?
+
+Out of sample, 2015-16 to 2025-26 (2.3 million shots), each season predicted from the three before it:
+
+| Model | Log loss | Brier score | AUC |
+| --- | --- | --- | --- |
+| League FG% (no model) | 0.691 | 0.249 | 0.507 |
+| League FG% by zone | 0.660 | 0.234 | 0.630 |
+| Logistic regression, distance + 3-point flag | 0.664 | 0.236 | 0.634 |
+| Boosting, location + game situation | 0.650 | 0.229 | 0.644 |
+| + shot kind (dunk, layup, hook, tip, jumper) | 0.641 | 0.226 | 0.651 |
+| **+ shot type (xFG model)** | **0.635** | **0.223** | **0.663** |
+
+Lower log loss and Brier score are better. The xFG model is the best in every season. Sorted into tenths by xFG, predicted and actual FG% are 0.8 points apart on average, and 0.4 points in 2024-25 and 2025-26. The score margin adds nothing measurable (log loss 0.6368 with it, 0.6366 without, in 2025-26).
+
+The shot type looks more useful in 2015-16 and 2016-17 (AUC 0.68) than it is. Before 2017-18, scorers gave made shots the detailed labels (pull-up, driving, step back) more often than misses. In 2012-13, 83% of missed twos from 10+ feet were plain "Jump Shot", against 70% of makes; by 2022-23 the two shares were within a point. The detail adds 0.04 AUC over the coarse shot kind in 2015-16, but only 0.003 to 0.005 since 2022-23. Models trained on those early seasons also overrate shots by 1.5 to 2.4 points through 2018-19, so shot making before 2019-20 is less reliable.
+
+**Is shot making a skill?** 2,034 players with 300+ attempts in two consecutive seasons, 2015-16 to 2025-26:
+
+| Year-to-year correlation | r |
+| --- | --- |
+| FG% | 0.823 |
+| eFG% | 0.635 |
+| xFG% (shot diet) | 0.917 |
+| FG% above expected (shot making) | 0.634 |
+| Points added per 100 shots | 0.602 |
+
+Shot making holds up from one season to the next as well as eFG% does: it is a skill, not luck. On its own, though, it predicts next season's FG% poorly (r 0.26, against 0.82 for last season's FG%). Most of a player's FG% is his shot diet, and that barely changes. The two parts work best together:
+
+- Last season's xFG% and shot making, weighted separately, predict next season's FG% better than last season's FG% (error 3.28 vs 3.40 points, each pair of seasons predicted from the others).
+- Last season's shot making predicts next season's shot making much better than FG% does (r 0.63 vs 0.28).
+
+Without tracking data, shot making also includes how open the shots were. Free throws are left out, so players get no credit for drawing fouls.
+
 ## Project layout
 
 ```
@@ -326,20 +454,28 @@ src/basketball_ml/
 │   ├── games.py       # game results, Elo and pre-game features
 │   ├── availability.py # who played in each game, lineup strength and impact
 │   ├── model.py       # win-probability models, walk-forward evaluation and calibration
+│   ├── market.py      # closing betting lines, matched to games, and the market benchmark
+│   ├── live.py        # the season in progress from the NBA's live feed: schedule, box scores, odds
 │   ├── plot.py        # calibration chart
-│   └── cli.py         # basketball-ml predict / ratings / games-backtest
+│   └── cli.py         # basketball-ml predict / tonight / ratings / games-backtest
 ├── embeddings/
 │   ├── features.py    # 34 style features from play-by-play and shot charts
 │   ├── model.py       # autoencoder, PCA and the identification test
 │   ├── archetypes.py  # k-means archetypes and the style map
 │   └── cli.py         # basketball-ml style-twins / archetypes / style-backtest
-└── impact/
-    ├── stints.py      # who is on the court, stint by stint, with expected threes and free throws
-    ├── box.py         # per-game box scores from the play-by-play
-    ├── rapm.py        # ridge-regression ratings, box-score priors, luck adjustment and backtest
-    ├── projection.py  # next-season forecast: rookies by draft pick and age, playing time, aging
-    ├── bench.py       # the Hoop Impact Bench game-margin test
-    └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
+├── impact/
+│   ├── stints.py      # who is on the court, stint by stint, with expected threes and free throws
+│   ├── box.py         # per-game box scores from the play-by-play
+│   ├── rapm.py        # ridge-regression ratings, box-score priors, luck adjustment and backtest
+│   ├── projection.py  # next-season forecast: rookies by draft pick and age, playing time, aging
+│   ├── bench.py       # the Hoop Impact Bench game-margin test
+│   └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
+└── shots/
+    ├── features.py    # shot features, label cleaning, score margin from the play-by-play
+    ├── model.py       # xFG models, baselines, walk-forward evaluation and calibration
+    ├── making.py      # league re-centering, arena correction, shrinkage, team tables, persistence
+    ├── plot.py        # half-court map of expected FG%
+    └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality
 tests/
 ```
 

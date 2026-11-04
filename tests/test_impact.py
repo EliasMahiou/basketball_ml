@@ -202,6 +202,19 @@ def test_projection_learns_that_high_picks_and_rotation_players_are_better():
     out = project(rated, 2022, bio, coef, players=range(30)).set_index("player_id")
     assert len(out) == 30 and out.loc[15, "rapm"] > out.loc[29, "rapm"] + 2
 
+    # The same projection, learned from earlier seasons only, added to every in-season refresh.
+    from basketball_ml.impact import project_schedule, projection_coefficients
+
+    coefficients = projection_coefficients(stints, {2021: rated, 2022: rated}, bio, [2021, 2022])
+    assert list(coefficients.index) == [2022]
+    schedule = pd.concat([rated.assign(season=s, as_of=pd.Timestamp(f"{s - 1}-11-01") + pd.Timedelta(days=d))
+                          for s in (2021, 2022) for d in (0, 30)], ignore_index=True)
+    projected = project_schedule(schedule, stints, bio, coefficients)
+    assert len(projected[projected["season"] == 2021]) == 2 * 15     # no earlier season: unchanged
+    late = projected[(projected["season"] == 2022) & (projected["as_of"] == projected["as_of"].max())]
+    late = late.set_index("player_id")
+    assert len(late) == 30 and late.loc[15, "rapm"] > late.loc[29, "rapm"] + 2
+
 
 def test_bench_scores_minutes_weighted_team_ratings(tmp_path):
     from basketball_ml.impact.bench import score_ratings

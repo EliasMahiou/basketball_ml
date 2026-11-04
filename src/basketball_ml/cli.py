@@ -8,6 +8,7 @@ from .embeddings import cli as embeddings_cli
 from .impact import cli as impact_cli
 from .predictions import cli as predictions_cli
 from .projections import cli as projections_cli
+from .shots import cli as shots_cli
 from .twins import cli as twins_cli
 
 
@@ -19,6 +20,7 @@ def main(argv: list[str] | None = None) -> None:
     predictions_cli.add_parser(subparsers)
     embeddings_cli.add_parser(subparsers)
     impact_cli.add_parser(subparsers)
+    shots_cli.add_parser(subparsers)
     args = parser.parse_args(argv)
     args.func(args)
 

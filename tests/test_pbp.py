@@ -55,3 +55,11 @@ def test_from_cdn_matches_the_stats_nba_layout():
     assert three["SCORE"] == "3 - 2" and three["PCTIMESTRING"] == "10:40"
     assert team_tov["PLAYER1_ID"] == 100 and pd.isna(team_tov["PLAYER1_TEAM_ABBREVIATION"])
     assert team_tov["HOMEDESCRIPTION"].startswith("HOM")
+
+
+def test_from_cdn_accepts_live_files_missing_unused_fields():
+    # The live feed leaves out fields no action of the game has used yet.
+    rows = _cdn_rows().drop(columns=["blockPersonId", "stealPersonId", "foulDrawnPersonId"])
+    events = pbp.from_cdn(rows)
+    assert events["EVENTMSGTYPE"].tolist() == [12, 1, 2, 4, 5, 8, 1, 5, 13]
+    assert events.iloc[2]["PLAYER3_ID"] == 0 and events.iloc[4]["PLAYER2_ID"] == 0

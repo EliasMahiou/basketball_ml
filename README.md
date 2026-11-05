@@ -10,7 +10,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 | [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
 | [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team |
-| [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player |
+| [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player, live for the season in progress |
 
 ## Installation
 
@@ -457,10 +457,14 @@ The home team's chance of winning after every event of a game, and the players w
 basketball-ml winprob-backtest --calibration docs/winprob_calibration.png   # walk-forward evaluation
 basketball-ml winprob-game --biggest-comeback --season 2026 --out docs/winprob_game.png
 basketball-ml winprob-game 22500199     # any game id, saved to outputs/winprob_22500199.png
+basketball-ml winprob-live              # 2026-27 games of the last day played, finished or in progress
+basketball-ml winprob-live 22600175     # one game of the season in progress
 basketball-ml wpa --season 2026         # leaderboard; --clutch, or --on-court for team WPA while on the court
 ```
 
 The first run takes about 25 minutes and caches game states and out-of-sample probabilities in `data/pbp/winprob_*.csv`; after that each command takes seconds.
+
+`winprob-live` follows the season being played through the NBA's live feed, like the [game predictions](#the-season-in-progress): each game's play-by-play is converted like 2025-26's, pre-game Elo is brought up to the last finished game, and the model is fit on every archived season (cached in `data/pbp/winprob_model_*.pkl`). A game in progress is charted up to its last play.
 
 2025-26 leaders, in wins added:
 
@@ -494,7 +498,7 @@ Lower is better. The events of a game are correlated, so differences are tested 
 
 - **Possession**: the inferred team is the one that shoots next 99.93% of the time and turns it over 99.87%. For 2025-26 it matches the possession recorded by the NBA's live feed on 99.93% of 430,398 events (99.81% at dead balls).
 - **What the Brownian model learned** (2012-13 to 2024-25): the ball is worth 0.52 points, a rebound pending after a team's own miss -0.24, each free throw to shoot 0.47. Its noise, 19.3 points per game, is larger than the 13.4-point spread of final margins around the pre-game spread: leads are less safe than a random walk would make them.
-- **Ties at the end**: the models don't know that a tie goes to overtime. Tied with 10 seconds or less and the away team's ball, home teams won 49% of the time but were given 42% (logistic 43%, boosting 48%). That's why Detroit is at 34% after tying the game with a second left, then 66% when overtime starts.
+- **Ties at the end**: the models don't know that a tie goes to overtime. Tied with 10 seconds or less and the away team's ball, home teams won 49% of the time but were given 42% (logistic 43%, boosting 48%). That's why Detroit is at 34% after tying the game with a second left, then 66% when overtime starts. Three fixes were tried, each fit only on earlier seasons: a logistic regression with three outcomes (ahead, tied or behind when the period ends, a tie then worth the chance of winning the overtime), a Brownian model whose ball loses its value in the last seconds, and boosting on the last 10 seconds of games within 3 points. The first and the last tied with the plain Brownian model (-0.0001 in log loss overall, 95% interval -0.0004 to +0.0002; -0.002 in those last seconds, -0.008 to +0.005) and the second was worse (+0.003). The boosting does fix the worst states: down 1 with the ball and 10 seconds or less left, home teams won 22% of the time, the Brownian model gives them 36% and the boosting 22%.
 - **Long shots**: teams given 2 to 5% came back 4.1% of the time (3.4% predicted). Below 0.1% the model is right on average (0.015% predicted, 0.016% observed): 10 of 11,448 teams that fell that low came back.
 - **Boosting** needs large leaves not to overfit the pre-game spread, which is the same all game, so it blurs rare end-game states: it gave Detroit 6.6% down 5 with 4 seconds left.
 - **WPA** credits only the players on each play: defense counts through blocks, steals, defensive rebounds and fouls, so it favors high-volume players and rebounders. The 70/30 and half splits are conventions.
@@ -545,8 +549,9 @@ src/basketball_ml/
     ├── states.py      # game states from the play-by-play: clock, score, possession inferred from the events
     ├── model.py       # Brownian, logistic and boosting models, walk-forward evaluation and calibration
     ├── wpa.py         # win probability added per player, clutch and on-court, biggest comebacks
+    ├── live.py        # the season in progress from the NBA's live feed: Elo, play-by-play, the fitted model
     ├── plot.py        # game chart and calibration chart
-    └── cli.py         # basketball-ml winprob-backtest / winprob-game / wpa
+    └── cli.py         # basketball-ml winprob-backtest / winprob-game / winprob-live / wpa
 tests/
 ```
 
@@ -562,4 +567,4 @@ pytest
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
 - **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
 - **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.
-- **Overtime in the win probability**: P(tie) x P(win in overtime) at the end of regulation, and live states for the season in progress from the NBA's live feed.
+- **Shot quality for the season in progress**: the live feed's play-by-play has each shot's location, so expected FG% and shot making could follow the season like the ratings and the win probability do.

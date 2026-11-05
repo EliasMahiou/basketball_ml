@@ -55,6 +55,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     _common(w)
     w.set_defaults(func=run_wpa)
 
+    v = subparsers.add_parser("winprob-live",
+                              help="Win probability of the season in progress, from the NBA's live feed.")
+    v.add_argument("game_id", nargs="?", type=int, help="Game id, e.g. 22600123 (default: every game of --date)")
+    v.add_argument("--date", help="Games of this day, YYYY-MM-DD, US Eastern (default: the last day with games played)")
+    v.add_argument("--model", default=BEST, choices=[m for m in METHODS if m != "pregame"],
+                   help=f"Whose probabilities to use (default: {BEST})")
+    v.add_argument("--out-dir", default="outputs", help="Where to save the charts (winprob_<game>.png)")
+    v.add_argument("--live-dir", default="data/live", help="Where files of finished games of the live feed are cached")
+    _common(v)
+    v.set_defaults(func=run_live)
+
 
 def load_games(data_dir: str | Path, first: int, last: int) -> pd.DataFrame:
     """Games with pre-game Elo (``predictions.add_features``), cached in ``data_dir``."""
@@ -223,3 +234,47 @@ def run_wpa(args: argparse.Namespace) -> None:
     if sort != "wpa" and "wpa" in table:
         cols.insert(4, "wpa")
     print(table[[c for c in cols if c in table]].round(2).to_string())
+
+
+def run_live(args: argparse.Namespace) -> None:
+    from ..predictions import live as feed
+    from .live import (default_date, fitted_model, game_probabilities, game_states, lowest_for_winner, season_elo,
+                       status_text)
+    from .plot import game_plot
+    from .wpa import game_curve
+
+    schedule = feed.season_games()
+    season = int(schedule["season"].iloc[0])
+    if season != args.last_season + 1:
+        raise SystemExit(f"The live feed is on {_season(season)}: load past seasons through {_season(season - 1)} "
+                         f"(--last-season {season - 1}).")
+    schedule = season_elo(schedule, args.data_dir, args.first_season, args.last_season)
+    if args.game_id:
+        todo = schedule[schedule["game_id"] == args.game_id]
+        if todo.empty:
+            raise SystemExit(f"Game {args.game_id} isn't in the {_season(season)} schedule")
+    else:
+        date = pd.Timestamp(args.date) if args.date else default_date(schedule)
+        todo = schedule[(schedule["date"] == date) & (schedule["status"] != 1)]
+        if todo.empty:
+            raise SystemExit(f"No game has started on {date:%Y-%m-%d}")
+    model = fitted_model(args.model, args.data_dir, args.first_season, args.last_season)
+    rows = []
+    for _, game in todo.iterrows():
+        built = game_states(game, args.live_dir)
+        if built is None:
+            continue
+        states, events = built
+        probs = game_probabilities(states, model, args.model)
+        curve = game_curve(probs, todo, int(game["game_id"]), args.model, events=events)
+        chart = game_plot(curve, game, Path(args.out_dir) / f"winprob_{int(game['game_id'])}.png")
+        final = int(game["status"]) == feed.FINAL
+        p_now = float(probs[f"p_{args.model}"].iloc[-1])
+        rows.append({"game": f"{game['away']} @ {game['home']}", "status": status_text(game, states, p_now),
+                     "winner's low": f"{lowest_for_winner(probs, args.model, bool(game['home_win'])):.1%}"
+                     if final else "", "chart": str(chart)})
+    if not rows:
+        raise SystemExit("No play-by-play yet for these games")
+    print(f"Home win probability after every play ({NAMES[args.model]}, fit on {_season(args.first_season)} to "
+          f"{_season(args.last_season)}; pre-game Elo through the last finished game):\n")
+    print(pd.DataFrame(rows).to_string(index=False))

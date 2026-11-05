@@ -127,10 +127,13 @@ def from_cdn(cdn: pd.DataFrame) -> pd.DataFrame:
     change; descriptions go to the home or visitor column by team.
     """
     d = cdn.sort_values(["gameId", "orderNumber"], kind="stable").reset_index(drop=True)
+    # The live feed leaves out the fields no action of the game has used yet (no block, no jump ball...).
     for col in ("personId", "assistPersonId", "stealPersonId", "blockPersonId", "foulDrawnPersonId",
                 "jumpBallWonPersonId", "jumpBallLostPersonId", "jumpBallRecoverdPersonId", "teamId"):
-        if col in d:
-            d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0).astype(np.int64)
+        d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0).astype(np.int64) if col in d else 0
+    for col in ("teamTricode", "playerNameI", "subType", "shotResult", "description"):
+        if col not in d:
+            d[col] = None
     team_of = d[d["personId"] > 0].drop_duplicates(["gameId", "personId"]).set_index(
         ["gameId", "personId"])["teamTricode"]
     name_of = d[d["personId"] > 0].drop_duplicates(["gameId", "personId"]).set_index(

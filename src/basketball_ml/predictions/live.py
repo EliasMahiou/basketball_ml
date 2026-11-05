@@ -84,10 +84,13 @@ def boxscore(game_id: int, cache_dir: str | Path = "data/live") -> dict | None:
                    final=lambda data: data["game"]["gameStatus"] == FINAL)
 
 
-def playbyplay(game_id: int, cache_dir: str | Path = "data/live") -> pd.DataFrame | None:
-    """The play-by-play actions of a finished game, with its ``gameId`` (cached); None if there are none."""
+def playbyplay(game_id: int, cache_dir: str | Path = "data/live", final: bool = True) -> pd.DataFrame | None:
+    """The play-by-play actions of a game, with its ``gameId``; None if there are none yet.
+
+    Cached when ``final``; a game in progress is fetched again each time.
+    """
     data = _cached(PLAYBYPLAY_URL.format(game_id=f"{game_id:010d}"),
-                   Path(cache_dir) / "playbyplay" / f"{game_id:010d}.json", final=True)
+                   Path(cache_dir) / "playbyplay" / f"{game_id:010d}.json", final=final)
     if data is None or not data["game"].get("actions"):
         return None
     return pd.DataFrame(data["game"]["actions"]).assign(gameId=int(data["game"]["gameId"]))

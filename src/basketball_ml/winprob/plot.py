@@ -123,7 +123,10 @@ def game_plot(curve: pd.DataFrame, game: pd.Series, out_path: str | Path) -> Pat
         ax.text(1.01, level, f"{team}\nfavored", color=MUTED, fontsize=9, ha="left", va="center",
                 transform=ax.get_yaxis_transform())
 
-    # Quarter (and overtime) markers.
+    # Quarter (and overtime) markers; a game in progress is drawn on the whole regulation.
+    if pd.isna(game["home_win"]):
+        end = max(end, 48.0) if end <= 48 else 48 + 5 * int(np.ceil((end - 48) / 5))
+        ax.set_xlim(0, end)
     bounds = [0, 12, 24, 36, 48] + [48 + 5 * k for k in range(1, round((end - 48) / 5) + 1)]
     labels = list(PERIODS) + ["OT" if k == 1 else f"{k}OT" for k in range(1, len(bounds) - 4)]
     for a in (ax, low_ax):
@@ -133,11 +136,12 @@ def game_plot(curve: pd.DataFrame, game: pd.Series, out_path: str | Path) -> Pat
         ax.text((left + right) / 2, 1.015, label, color=MUTED, fontsize=9, ha="center", va="bottom",
                 transform=ax.get_xaxis_transform())
 
-    # The eventual winner's lowest point.
-    home_won = bool(game["home_win"])
+    # The eventual winner's lowest point (for a game in progress, the team favored now: its lowest point so far).
+    live = pd.isna(game["home_win"])
+    home_won = bool(wp[-1] >= 0.5) if live else bool(game["home_win"])
     winner, loser = (home, away) if home_won else (away, home)
     winner_wp = wp if home_won else 1 - wp
-    i = int(np.argmin(winner_wp[:-1]))
+    i = int(np.argmin(winner_wp if live else winner_wp[:-1]))
     row = curve.iloc[i]
     trailing = int(-row["margin"] if home_won else row["margin"])
     ax.plot([x[i]], [wp[i]], marker="o", markersize=8, color=INK, markeredgecolor=SURFACE, markeredgewidth=2,
@@ -154,7 +158,8 @@ def game_plot(curve: pd.DataFrame, game: pd.Series, out_path: str | Path) -> Pat
     if "description" in curve:
         gain = (curve["delta"] * (1 if home_won else -1)).to_numpy()
         plays = curve["event"].isin(PLAYS) & curve["description"].fillna("").astype(str).str.strip().ne("")
-        gain = np.where(plays.to_numpy(), gain, -np.inf)[:-1]
+        gain = np.where(plays.to_numpy(), gain, -np.inf)
+        gain = gain if live else gain[:-1]
         j = int(np.argmax(gain))
         play = curve.iloc[j]
         text = re.sub(r"\s*\(\d+ PTS\)", "", str(play["description"]))
@@ -184,8 +189,15 @@ def game_plot(curve: pd.DataFrame, game: pd.Series, out_path: str | Path) -> Pat
     title = f"{away} at {home}, {date:%B} {date.day}, {date.year}"
     overtimes = int(curve["period"].max()) - 4
     extra = f" in {OVERTIMES.get(overtimes, f'{overtimes} overtimes')}" if overtimes > 0 else ""
-    sub = (f"{winner} beat {loser} {max(game['home_pts'], game['away_pts'])}-"
-           f"{min(game['home_pts'], game['away_pts'])}{extra} after falling to a {_pct(winner_wp[i])} chance")
+    if live:
+        last = curve.iloc[-1]
+        lead = int(last["margin"])
+        score = f"{home} up {lead}" if lead > 0 else (f"{away} up {-lead}" if lead < 0 else "tied")
+        sub = (f"In progress, {_clock_text(int(last['period']), int(last['seconds_left']))}: {score}, "
+               f"{home} {_pct(wp[-1])} to win")
+    else:
+        sub = (f"{winner} beat {loser} {max(game['home_pts'], game['away_pts'])}-"
+               f"{min(game['home_pts'], game['away_pts'])}{extra} after falling to a {_pct(winner_wp[i])} chance")
     fig.text(0.125, 0.975, title, color=INK, fontsize=12.5, ha="left", va="bottom")
     fig.text(0.125, 0.948, sub, color=MUTED, fontsize=9.5, ha="left", va="bottom")
 

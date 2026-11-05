@@ -151,18 +151,22 @@ def biggest_comebacks(results: pd.DataFrame, games: pd.DataFrame, method: str) -
 
 
 def game_curve(results: pd.DataFrame, games: pd.DataFrame, game_id: int, method: str,
-               data_dir: str | Path | None = None) -> pd.DataFrame:
+               data_dir: str | Path | None = None, events: pd.DataFrame | None = None) -> pd.DataFrame:
     """One game's states with ``minute`` (played), ``wp``, ``margin`` and ``delta``, ending on the result.
 
-    With ``data_dir``, adds each event's ``description`` from the play-by-play.
+    Adds each event's ``description`` from the game's play-by-play: ``events``
+    (in the file order its states were built from), or the archive in
+    ``data_dir``. A game still in progress (``home_win`` missing) ends on its
+    last event.
     """
     r = win_prob_changes(results[results["game_id"] == game_id], method)
     if r.empty:
         raise SystemExit(f"No out-of-sample probabilities for game {game_id}")
     r["minute"] = elapsed_seconds(r["period"].to_numpy(), r["seconds_left"].to_numpy()) / 60
-    if data_dir is not None:
+    if events is None and data_dir is not None:
         events = pbp.load_pbp(int(r["season"].iloc[0]), data_dir)
         events = events[events["GAME_ID"] == game_id].sort_values("PERIOD", kind="stable").reset_index(drop=True)
+    if events is not None:
         text = events["HOMEDESCRIPTION"].fillna(events["VISITORDESCRIPTION"]).fillna("")
         both = events["HOMEDESCRIPTION"].notna() & events["VISITORDESCRIPTION"].notna()
         # Steals and blocks share a row with the turnover or miss: keep the play's own text.
@@ -170,6 +174,8 @@ def game_curve(results: pd.DataFrame, games: pd.DataFrame, game_id: int, method:
                        events["VISITORDESCRIPTION"].reindex(r["row"]).to_numpy())
         r["description"] = np.where(both.reindex(r["row"]).to_numpy(), own, text.reindex(r["row"]).to_numpy())
     game = games[games["game_id"] == game_id].iloc[0]
+    if pd.isna(game["home_win"]):
+        return r.reset_index(drop=True)
     end = r.iloc[[-1]].copy()
     end["wp"] = float(game["home_win"])
     end["delta"] = end["wp"] - r["wp"].iloc[-1]

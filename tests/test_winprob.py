@@ -188,3 +188,26 @@ def test_wpa_credit_shares():
     changes["margin"] = [0, 2, 2, 9, 9]
     clutch = win_prob_changes(changes, "stern")["clutch"].tolist()
     assert clutch == [True, True, True, True, False]                                   # margin before the event
+
+
+def test_live_game_states_from_the_feed(monkeypatch):
+    from test_pbp import _cdn_rows
+
+    from basketball_ml.predictions import live as feed
+    from basketball_ml.winprob import SternModel
+    from basketball_ml.winprob.live import game_probabilities, game_states, status_text
+
+    monkeypatch.setattr(feed, "playbyplay", lambda game_id, cache_dir, final=True: _cdn_rows())
+    game = pd.Series({"game_id": 1, "home": "HOM", "away": "AWY", "status": 2, "season": 2027, "elo_prob": 0.6,
+                      "elo_diff": 56.0, "home_win": np.nan, "home_pts": 2, "away_pts": 3})
+    states, events = game_states(game)
+    assert len(events) == 9
+    assert states["margin"].tolist()[-1] == -1 and states["seconds_left"].iloc[0] == 2880
+    assert (states["elo_prob"] == 0.6).all() and (states["elo_spread"] == 2.0).all()
+    assert states["home_win"].isna().all()
+    probs = game_probabilities(states, SternModel(), "stern")
+    assert probs["p_stern"].between(0, 1).all() and probs["event"].ne(13).all()
+    assert status_text(game, states, 0.4) == "Q1 0:00, AWY leads by 1, HOM 40%"
+    final = game.copy()
+    final["status"], final["home_pts"], final["away_pts"] = 3, 101, 99
+    assert status_text(final, states, 1.0) == "Final, HOM won 101-99"

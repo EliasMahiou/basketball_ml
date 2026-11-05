@@ -276,11 +276,11 @@ def game_states(game: pd.DataFrame, home: str) -> pd.DataFrame:
     """States after each event of one game (events in file order), for ``home`` the home team's abbreviation."""
     gid = game["GAME_ID"].iloc[0]
     prepared = prepare_events(game, pd.Series({gid: home}))
-    return _states(prepared)
+    return states_from_events(prepared)
 
 
-def _states(prepared: pd.DataFrame) -> pd.DataFrame:
-    """Run the possession walk game by game and keep the state-changing events.
+def states_from_events(prepared: pd.DataFrame) -> pd.DataFrame:
+    """Run the possession walk game by game (on :func:`prepare_events` output) and keep the state-changing events.
 
     ``row`` is each event's position in the game's file order; the table is in walk order.
     """
@@ -307,7 +307,7 @@ def season_states(season: int, data_dir: str | Path = "data/pbp") -> pd.DataFram
                                               "PLAYER3_NAME") if c in events])
     homes = _home_teams(events)
     events = events[events["GAME_ID"].isin(homes.index)]
-    out = _states(prepare_events(events, homes))
+    out = states_from_events(prepare_events(events, homes))
     out.insert(1, "season", season)
     return out
 

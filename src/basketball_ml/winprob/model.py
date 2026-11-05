@@ -157,15 +157,18 @@ def _columns(method: str) -> list[str]:
     return LOGISTIC_FEATURES if method == "logistic" else RAW_FEATURES
 
 
-def fit(method: str, frame: pd.DataFrame, y: np.ndarray):
-    """Fit ``method`` on model inputs ``frame`` (from ``model_frame``) and outcomes ``y``."""
+def fit(method: str, states: pd.DataFrame):
+    """Fit ``method`` on game states with their pre-game strength and result (``states.add_game_info``)."""
     model = make_model(method)
+    frame, y = model_frame(states), states["home_win"].to_numpy()
     if method == "stern":
         return model.fit(frame, y)
     return model.fit(frame[_columns(method)], y)
 
 
-def predict(method: str, model, frame: pd.DataFrame) -> np.ndarray:
+def predict(method: str, model, states: pd.DataFrame) -> np.ndarray:
+    """Home win probability of each state from a model returned by :func:`fit`."""
+    frame = model_frame(states)
     if method == "stern":
         return model.predict_proba(frame)
     return model.predict_proba(frame[_columns(method)])[:, 1]
@@ -196,15 +199,13 @@ def walk_forward(states: pd.DataFrame, test_seasons: Iterable[int], methods: Seq
             continue
         if max_train_rows and len(train) > max_train_rows:
             train = train.sample(max_train_rows, random_state=seed)
-        x_train, x_test = model_frame(train), model_frame(test)
-        y = train["home_win"].to_numpy()
         for m in methods:
             if m == "pregame":
                 test[f"p_{m}"] = test["elo_prob"].to_numpy()
                 continue
             with threadpool_limits(2):
-                model = fit(m, x_train, y)
-                test[f"p_{m}"] = predict(m, model, x_test)
+                model = fit(m, train)
+                test[f"p_{m}"] = predict(m, model, test)
         out.append(test)
     return pd.concat(out, ignore_index=True)
 

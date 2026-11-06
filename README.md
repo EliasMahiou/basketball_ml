@@ -8,7 +8,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays, benchmarked against closing betting lines, and live for the season in progress |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
-| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast tied for first among public metrics on established players |
+| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast in the top four of 13 metrics on a public benchmark |
 | [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team, live for the season in progress |
 | [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player, live for the season in progress |
 | [`tracking`](#player-tracking) | Ready | What the arena cameras add: how open each shot was (from the 2014-15 shot logs and the raw 2015-16 positions), its effect on expected FG% and shot making, and the defenders who make shooters miss |
@@ -34,6 +34,7 @@ Play-by-play and shot charts come from the public GitHub repository [shufinskiy/
 Other public sources, also downloaded on first use:
 
 - **Draft picks, birth dates and player ids**: [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets) and the NBA.com to Basketball-Reference id table of [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data), into `data/bref/` (impact forecast).
+- **College box scores**: ESPN's box scores of every men's Division I game since 2009-10, from the public files of the [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data) project, into `data/college/` (rookie values of the impact forecast; read with `pyarrow`, installed with the package).
 - **Hoop Impact Bench**: games and minutes of [lumahoops/hoop-impact-bench](https://github.com/lumahoops/hoop-impact-bench) (CC BY 4.0), into `data/bench/`.
 - **Closing betting lines**: [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), into `data/odds/` (market benchmark).
 - **The season in progress**: the NBA's live feed (schedule, box scores, play-by-play and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`; the odds are also archived on this repository's `odds-archive` branch.
@@ -159,7 +160,7 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
     - **Lineup strength**: each team is expected to field the players of its previous game. A player who is hurt keeps missing games, so his absence carries over; one back from injury is missed once. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games, and a team's strength is the sum over its 10 best players. A team's first game of a season has no previous game: its players stand in for the announced roster.
-    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the same players, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons, with the offense and defense box-score prior, the luck adjustment and the forecast layer (rookies by draft pick and age, playing time, aging).
+    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the same players, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons, with the offense and defense box-score prior, the luck adjustment and the forecast layer (rookies by draft pick, age and college stats, playing time, aging).
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
@@ -188,15 +189,15 @@ Out of sample from 2017-18 to 2025-26 (10,746 games), with each season predicted
 | Logistic regression, with lineup strength | 66.0% | 0.616 | 0.214 |
 | **Logistic regression, with lineup strength and impact** | **66.6%** | **0.612** | **0.212** |
 | Gradient boosting, same features | 66.1% | 0.615 | 0.213 |
-| *Logistic regression, knowing who played (not possible before the game)* | *67.4%* | *0.603* | *0.208* |
+| *Logistic regression, knowing who played (not possible before the game)* | *67.5%* | *0.603* | *0.208* |
 
-Lower log loss and Brier score are better. The lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6125, both 0.6116. 2025-26 was the most predictable of the nine test seasons (69.4% accuracy, log loss 0.585), and 2020-21 the least (63.2%, 0.635).
+Lower log loss and Brier score are better. The lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6124, both 0.6116. 2025-26 was the most predictable of the nine test seasons (69.4% accuracy, log loss 0.585); 2020-21 had the lowest accuracy (63.4%) and 2022-23 the highest log loss (0.639).
 
-**Who plays.** Earlier versions of this table used the players who actually played in each game, on the grounds that injury reports announce absences before tip-off. That reached 67.4% and a log loss of 0.603, but it also knew about late scratches, coaches' decisions and who got minutes in a blowout, none of which is known before the game. With lineups from earlier games only, about half of what the lineup features seemed to add is gone. The regular rotation with no injury news at all does a little worse than the previous game (66.3%, 0.6154), and weighting each player by his chance of playing, given the games he just missed, does no better than the previous game (0.6117). Real injury reports sit somewhere between the previous game and knowing who played; this repo can't read them.
+**Who plays.** Earlier versions of this table used the players who actually played in each game, on the grounds that injury reports announce absences before tip-off. That reached 67.5% and a log loss of 0.603, but it also knew about late scratches, coaches' decisions and who got minutes in a blowout, none of which is known before the game. With lineups from earlier games only, about half of what the lineup features seemed to add is gone. The regular rotation with no injury news at all does a little worse than the previous game (66.3%, 0.6154), and weighting each player by his chance of playing, given the games he just missed, does no better than the previous game (0.6116). Real injury reports sit somewhere between the previous game and knowing who played; this repo can't read them.
 
-**Settings chosen on test seasons.** The Elo home edge was picked on 2017-18 to 2020-21 and the RAPM settings on 2015-16 to 2018-19, all inside or next to the test window. The logistic model barely depends on them: any home edge from 0 to 100 Elo points gives the same log loss (0.6116 to 0.6117), since the model learns its own home advantage. Only the "Elo alone" row is flattered: picked on 2015-16 and 2016-17 instead, the edge would be 80 and that row 0.626. On 2021-22 to 2025-26, after every season used for a choice, the model is 67.4% right with a log loss of 0.608 (6,150 games).
+**Settings chosen on test seasons.** The Elo home edge was picked on 2017-18 to 2020-21 and the RAPM settings on 2015-16 to 2018-19, all inside or next to the test window. The logistic model barely depends on them: any home edge from 0 to 100 Elo points gives the same log loss (0.6116 to 0.6117), since the model learns its own home advantage. Only the "Elo alone" row is flattered: picked on 2015-16 and 2016-17 instead, the edge would be 80 and that row 0.626. On 2021-22 to 2025-26, after every season used for a choice, the model is 67.3% right with a log loss of 0.608 (6,150 games).
 
-With the players who actually played, the better ratings of the [impact module](#player-impact-rapm) (offense and defense prior, luck adjustment, forecast layer) had cut the log loss from 0.6058 to 0.6027, and refreshing them every month had raised accuracy by 0.3 points. A "missing production" feature (the summed production of regulars not expected to play) adds nothing on top of lineup strength (0.6116 with or without it), so it isn't used. Neither did travel: the distance each team flew since its previous game, time zones crossed, consecutive road games and the altitude of Denver and Utah together moved the log loss by 0.0002.
+With the players who actually played, the better ratings of the [impact module](#player-impact-rapm) (offense and defense prior, luck adjustment, forecast layer) had cut the log loss from 0.6058 to 0.6027, and refreshing them every month had raised accuracy by 0.3 points. A "missing production" feature (the summed production of regulars not expected to play) adds nothing on top of lineup strength (0.6115 with it, 0.6116 without), so it isn't used. Neither did travel: the distance each team flew since its previous game, time zones crossed, consecutive road games and the altitude of Denver and Utah together moved the log loss by 0.0002.
 
 ### Calibration
 
@@ -213,22 +214,22 @@ Closing betting lines are the hardest benchmark: they know everything public bef
 | | Accuracy | Log loss | Brier score |
 | --- | --- | --- | --- |
 | Closing line | 67.5% | 0.6007 | 0.2070 |
-| Model | 66.2% | 0.6156 | 0.2135 |
+| Model | 66.2% | 0.6155 | 0.2134 |
 | Model given the closing line as one more feature | 67.4% | 0.6008 | 0.2071 |
 
-The market is better in all 9 seasons, by 0.0149 in log loss (paired standard error 0.0019). When the two disagree by more than 10 points, the market is almost always right: in the 1,196 games where the model gave the home team 10+ points more than the line (59% against 43% on average), the home team won 44%; in the 712 where the line was 10+ points higher (65% against 50%), it won 64%. Most of those gaps are what the model can't see: injury news, minutes limits and rest decisions. The model adds nothing to the line: with the line's log-odds as a feature, the log loss is 0.6008, against 0.6007 for the line alone. The small gain reported before (0.0007) came from knowing who played.
+The market is better in all 9 seasons, by 0.0148 in log loss (paired standard error 0.0019). When the two disagree by more than 10 points, the market is almost always right: in the 1,195 games where the model gave the home team 10+ points more than the line (59% against 43% on average), the home team won 44%; in the 709 where the line was 10+ points higher (65% against 50%), it won 63%. Most of those gaps are what the model can't see: injury news, minutes limits and rest decisions. The model adds nothing to the line: with the line's log-odds as a feature, the log loss is 0.6008, against 0.6007 for the line alone. The small gain reported before (0.0007) came from knowing who played.
 
 Point margins say more per game than a win or a loss, so the spread is a sharper test. The file's spreads are rougher than its moneylines: before 2022-23 their sign often disagrees with the moneyline and some hold the over/under. Each spread takes the sign of the moneyline's favorite and is used only within 3 points of the margin the moneyline implies (12.5 × Φ⁻¹ of its win probability, close to the books' own conversion: 12.6 since 2022-23), which keeps 9,430 of the 10,054 games. Linear models of the home margin, fitted on earlier seasons:
 
 | | RMSE | Squared error per game vs the spread (95%) | Its side covers (95%) |
 | --- | --- | --- | --- |
 | Closing spread | 13.19 | | |
-| Model | 13.37 | +4.67 (+3.18 to +6.29) | 50.8% (49.8% to 51.8%) |
+| Model | 13.37 | +4.66 (+3.18 to +6.28) | 50.5% (49.5% to 51.5%) |
 | Spread and moneyline | 13.17 | -0.58 (-1.16 to +0.01) | 51.5% (50.5% to 52.6%) |
-| Model, spread and moneyline | 13.15 | -1.05 (-1.69 to -0.42) | 52.1% (51.1% to 53.1%) |
-| Player impact, spread and moneyline | 13.16 | -0.99 (-1.63 to -0.36) | 52.2% (51.2% to 53.2%) |
+| Model, spread and moneyline | 13.15 | -1.04 (-1.69 to -0.42) | 52.1% (51.1% to 53.1%) |
+| Player impact, spread and moneyline | 13.16 | -0.99 (-1.62 to -0.36) | 52.0% (51.0% to 53.1%) |
 
-Alone, the model is behind the spread in 8 of 9 seasons, and the side it prefers covers 50.8% of the time, short of the 52.4% a bet at -110 needs. The moneyline alone already does a little better than the spread column, a sign that the file's spreads are less exact than its moneylines (the two differ by a standard deviation of 1.3 to 1.4 points before 2022-23 and 0.5 to 0.7 since), so the fair benchmark is the market as a whole. On top of it, the model's features still cut the squared error by 0.47 points per game (95% 0.12 to 0.83), in 7 of 9 seasons, and nearly all of that is the player-impact rating of the expected lineups: with the market alone it cuts 0.41, in 8 of 9 seasons. These lines don't fully price the player ratings, then, but the gap is small: the side the model prefers covers 52.1%, still under 52.4%. On win probability the same rating's gain on the moneyline, 0.0003 in log loss, is within noise (95% -0.0009 to +0.0002).
+Alone, the model is behind the spread in 8 of 9 seasons, and the side it prefers covers 50.5% of the time, short of the 52.4% a bet at -110 needs. The moneyline alone already does a little better than the spread column, a sign that the file's spreads are less exact than its moneylines (the two differ by a standard deviation of 1.3 to 1.4 points before 2022-23 and 0.5 to 0.7 since), so the fair benchmark is the market as a whole. On top of it, the model's features still cut the squared error by 0.46 points per game (95% 0.12 to 0.82), in 7 of 9 seasons, and nearly all of that is the player-impact rating of the expected lineups: with the market alone it cuts 0.41, in 8 of 9 seasons. These lines don't fully price the player ratings, then, but the gap is small: the side the model prefers covers 52.1%, still under 52.4%. On win probability the same rating's gain on the moneyline, 0.0004 in log loss, is within noise (95% -0.0009 to +0.0002).
 
 ### The season in progress
 
@@ -236,23 +237,23 @@ The play-by-play archives are published after each season, so the season being p
 
 The odds feed only shows today's and the next few games, so a scheduled workflow (`.github/workflows/odds.yml`) saves it seven times a day, from 15:00 to 02:00 UTC, on the [`odds-archive`](https://github.com/EliasMahiou/basketball_ml/tree/odds-archive) branch. `tonight` then scores this season's games against the sportsbooks' last moneylines before each tip-off (within 12 hours), once the archive has some; it started on November 6, 2026.
 
-Through November 4, 2026, the 121 games of 2026-27 predicted that way (from the games before each one, each team with the players of its previous game) went 66.9% right with a log loss of 0.610; Elo alone was 60.3% right (log loss 0.632). That's too few games to be sure of either number: the 95% intervals, from resampling the games, are 58.7% to 75.2% for the accuracy and 0.540 to 0.680 for the log loss, and the model's edge over Elo (0.023) goes from -0.050 to +0.007. For November 6, 2026, before two of the games had odds:
+Through November 5, 2026, the 123 games of 2026-27 predicted that way (from the games before each one, each team with the players of its previous game) went 67.5% right with a log loss of 0.607; Elo alone was 61.0% right (log loss 0.630). That's too few games to be sure of either number: the 95% intervals, from resampling the games, are 60.2% to 74.8% for the accuracy and 0.541 to 0.672 for the log loss, and the model's edge over Elo (0.023) goes from -0.052 to +0.004. For November 6, 2026:
 
 ```
           home win sportsbooks   elo lineup impact rest
 game
-WAS @ ATL      79%           -  +291          +5.6   +0
-BOS @ CHA      34%           -   -84          -5.7   +0
-PHI @ CLE      59%         44%   +67          +1.9   +0
-UTA @ DAL      73%         69%  +184          +1.2   +0
-OKC @ MEM      40%         39%  -174          -4.7   +0
-TOR @ MIL      29%         30%  -136          -6.7   +0
-MIN @ NOP      33%         39%   -94          -8.0   +0
+WAS @ ATL      79%         69%  +291          +5.6   +0
+BOS @ CHA      34%         26%   -84          -5.7   +0
+PHI @ CLE      59%         43%   +67          +2.0   +0
+UTA @ DAL      73%         70%  +184          +1.2   +0
+OKC @ MEM      40%         42%  -174          -4.8   +0
+TOR @ MIL      29%         31%  -136          -6.6   +0
+MIN @ NOP      33%         38%   -94          -8.0   +0
 POR @ LAL      65%         57%   +93          +2.8   +0
-SAS @ SAC      12%         12%  -273         -15.1   +0
+SAS @ SAC      12%         12%  -273         -15.0   +0
 ```
 
-Each team is expected to field the players of its latest game; the model can't see injury news, so list players who won't play with `--out`. A gap like Cleveland's 15 points is more likely news the model lacks than an edge.
+Each team is expected to field the players of its latest game; the model can't see injury news, so list players who won't play with `--out`. A gap like Cleveland's 16 points is more likely news the model lacks than an edge.
 
 ## Play-by-play style
 
@@ -304,7 +305,7 @@ Play-by-play style is a much stronger fingerprint than box-score rates. Compress
 
 ## Player impact (RAPM)
 
-How many points does a player add to his team per 100 possessions, once you account for who he shares the court with? Regularized adjusted plus-minus (RAPM) answers it from the play-by-play, helped by the box score, the draft and age.
+How many points does a player add to his team per 100 possessions, once you account for who he shares the court with? Regularized adjusted plus-minus (RAPM) answers it from the play-by-play, helped by the box score, the draft, age and college stats.
 
 ### Method
 
@@ -313,7 +314,15 @@ How many points does a player add to his team per 100 possessions, once you acco
 3. **Ridge regression.** Each stint is two observations, one per team on offense: points per 100 possessions = league average + home edge + the 5 offensive players' O ratings + the 5 defenders' D ratings, weighted by possessions. Ridge shrinks every rating toward a prior, so players with few minutes or always sharing the court with the same teammates don't get wild values. Ratings use two seasons, the older one at 71% weight.
 4. **Offense and defense box-score priors.** Each player is shrunk toward a box-score estimate of his offensive and of his defensive rating instead of toward average. Box scores come from the play-by-play (rebounds split into offensive and defensive by the team of the last miss). His per-100-possession rates of 2- and 3-point makes and attempts, free throws, assists, offensive rebounds, turnovers and fouls drawn on offense, and of defensive rebounds, steals, blocks and fouls on defense, plus his minutes per game, are mapped to the rating scale by regressing plain offensive and defensive RAPM on them (every rate is available to both). With a better prior, RAPM leans on it more (`alpha = 8000` instead of 4000). Shot zones and the share of assisted baskets added nothing.
 5. **Luck adjustment.** Free throws count as the shooter's expected makes, and for the defensive ratings the opponents' threes count as expected makes too: a defense has little control over whether open threes go in, and opponent 3-point percentage takes thousands of attempts to mean anything. Each shooter's percentages come from the other half of the season's games, padded with 450 league-average threes and 24 free throws. Offense keeps its actual threes, since shooting is a skill. This is the recipe of [OpenRAPM](https://github.com/bbstats/openrapm).
-6. **Forecast for the next season.** Ratings describe the past. To forecast, three corrections are learned each season from the earlier ones (the margin of every stint that last season's ratings leave unexplained, regressed on player features): players without a rating get a value from their draft pick and age, players rated from few possessions are moved down (`possessions / (possessions + 1000)`), and young players up and old ones down. Learned through 2025-26: a 19-year-old first pick is worth -0.7, a 20-year-old 10th pick -2.3 and an undrafted 23-year-old -2.6, but an undrafted 27-year-old (often a veteran of another league) -0.6; a player rated from 300 possessions loses 1.6 points and one rated from 8,000 gains 0.6; a 21-year-old gains 1.3 points on a 33-year-old. Draft picks, birth dates and NBA.com-to-Basketball-Reference ids come from public GitHub mirrors ([sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets), [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data)), downloaded into `data/bref/` on first use.
+6. **Forecast for the next season.** Ratings describe the past. To forecast, corrections are learned each season from the earlier ones: the margin of every stint that last season's ratings leave unexplained is regressed on player features. Learned through 2025-26:
+    - **Players without a rating** get a value from their draft pick, age and last college season. A first pick is worth 1.8 points more than a 10th pick with the same college season, and each year of age 0.45 more. A draft pick who joins a season or more after his draft (often from Europe) is worth 1.4 points more, and a player coming back after two or more seasons away 1.5 less. For college players, each standard deviation of minutes per game or of true shooting is worth about 0.7 points, of free-throw percentage or offensive rebounds 0.6 and of assists 0.5; fouls per 40 minutes count for him, not against (+0.4), scoring volume counts slightly against once efficiency is known (-0.3), and his team's strength adds nothing. Among this season's rookies, that puts Cameron Boozer (3rd pick) at -0.3 and Yaxel Lendeborg (11th, 24 years old) at +0.5, but AJ Dybantsa (1st) at -1.9 and Darryn Peterson (2nd) at -3.1.
+    - **Players rated from few possessions** are moved down: with the same rating, one rated from 8,000 possessions is put 2.0 points above one rated from 300 (the feature is `possessions / (possessions + 1000)`).
+    - **Age** moves young players up and old ones down, 0.11 points a year: a 21-year-old gains 1.3 points on a 33-year-old.
+
+   The college season is the player's last one, if it ended in the six seasons before, from the box scores of every Division I game since 2009-10. NBA players are matched to it by name and school: 94% of the NBA players with a US college since 2012 match on both. It gives rates per 40 minutes (points, assists, offensive and defensive rebounds, steals, blocks, turnovers, fouls), true shooting, three-point rate, free-throw percentage, minutes per game and the team's schedule-adjusted margin, all standardized. Few rookies inform those 13 numbers in the first seasons, so they get a much stronger ridge penalty than the other features (100,000 instead of 1); without it, they made the 2016-17 forecast worse. Height and weight added nothing.
+
+   Stint margins only compare the ten players on the court, so the same amount can be added to everyone's value without changing any prediction. The forecast is centered so that the rated players' average, weighted by possessions, is 0, and so is RAPM in the table below. Draft picks, birth dates, NBA seasons, colleges and NBA.com-to-Basketball-Reference ids come from public GitHub mirrors ([sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets), [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data)), downloaded into `data/bref/` on first use.
+
 7. **Tuning.** The shrinkage, the window, the prior's features and shrinkage (300 possessions), the share of 3-point luck removed and the rating of unrated players (-1.5) were chosen on 2015-16 to 2018-19, by how well each season's ratings explain the next season's game margins. The forecast's features were picked after looking at every season, so its edge in the tables below is a little optimistic.
 
 ### Usage
@@ -327,20 +336,20 @@ basketball-ml impact-export               # forecasts for every season, as seaso
 basketball-ml impact-bench                # score the forecasts on the Hoop Impact Bench test
 ```
 
-2024-25 and 2025-26, players with 3,000+ offensive possessions:
+2024-25 and 2025-26, players with 3,000+ offensive possessions, in points per 100 possessions above the average player (weighted by possessions):
 
 | | Player | Offense | Defense | RAPM | 2026-27 forecast |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Nikola Jokić | +7.3 | +1.2 | +8.4 | +8.5 |
-| 2 | Shai Gilgeous-Alexander | +6.7 | +1.6 | +8.3 | +8.8 |
-| 3 | Victor Wembanyama | +2.3 | +5.0 | +7.3 | +8.3 |
-| 4 | Giannis Antetokounmpo | +5.3 | +0.7 | +6.0 | +5.9 |
-| 5 | Kawhi Leonard | +4.6 | +1.2 | +5.8 | +5.4 |
-| 6 | Luka Dončić | +5.1 | +0.3 | +5.4 | +5.9 |
-| 7 | Donovan Mitchell | +3.9 | +0.7 | +4.6 | +4.8 |
-| 8 | Tyrese Haliburton | +4.1 | +0.4 | +4.5 | +4.9 |
-| 9 | Chet Holmgren | +1.4 | +3.1 | +4.5 | +5.2 |
-| 10 | Jarrett Allen | +2.6 | +1.8 | +4.3 | +4.7 |
+| 1 | Nikola Jokić | +6.8 | +1.0 | +7.8 | +7.6 |
+| 2 | Shai Gilgeous-Alexander | +6.2 | +1.5 | +7.7 | +7.9 |
+| 3 | Victor Wembanyama | +1.8 | +4.9 | +6.7 | +7.4 |
+| 4 | Giannis Antetokounmpo | +4.8 | +0.5 | +5.3 | +5.0 |
+| 5 | Kawhi Leonard | +4.1 | +1.1 | +5.2 | +4.5 |
+| 6 | Luka Dončić | +4.6 | +0.2 | +4.7 | +5.0 |
+| 7 | Donovan Mitchell | +3.4 | +0.6 | +4.0 | +4.0 |
+| 8 | Tyrese Haliburton | +3.6 | +0.3 | +3.9 | +4.0 |
+| 9 | Chet Holmgren | +0.9 | +3.0 | +3.9 | +4.4 |
+| 10 | Jarrett Allen | +2.1 | +1.6 | +3.7 | +3.8 |
 
 Defensive players (Wembanyama, Holmgren, Derrick White, Alex Caruso) rank much higher than in box-score metrics, which is the point of plus-minus models; the flip side is that a role player on a great team can get credit for the stars around him, and two seasons is still a small sample. The forecast moves young players up (Wembanyama, Holmgren, Ausar Thompson) and older ones down (Stephen Curry, Jimmy Butler, Kawhi Leonard).
 
@@ -350,7 +359,7 @@ Ratings from the two previous seasons, applied to the players actually on the co
 
 | Rating | Margin explained | Best in |
 | --- | --- | --- |
-| **Forecast: RAPM + rookies, playing time and age** | **17.8%** | 9 of 11 seasons |
+| **Forecast: RAPM + rookies (draft, age, college), playing time and age** | **18.1%** | 9 of 11 seasons |
 | RAPM, offense/defense box-score prior, luck-adjusted | 16.8% | 2 |
 | RAPM, offense/defense box-score prior | 16.4% | |
 | RAPM, one box-score production prior (previous version) | 15.4% | |
@@ -359,15 +368,15 @@ Ratings from the two previous seasons, applied to the players actually on the co
 | Raw on-court net rating | 11.3% | |
 | Adjusted plus-minus without shrinkage | 11.1% | |
 
-Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck adjustment in 9 of 11 and the forecast in 9 of 11. The forecast's corrections are learned from earlier seasons only, so they are weak in the first test seasons (learned from one to three seasons) and worth about 2 points from 2020-21 on.
+Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck adjustment in 9 of 11 and the forecast in 9 of 11. The forecast's corrections are learned from earlier seasons only, so they are weak in the first test seasons (learned from one to three seasons) and worth about 2.4 points from 2020-21 on. College stats added 0.4 of those; without them the forecast explains 17.8%.
 
 **Against public metrics.** [Hoop Impact Bench](https://github.com/lumahoops/hoop-impact-bench) scores public impact metrics on the same test: preseason ratings weighted by the minutes players actually played, 7,230 games from 2020-21 to 2025-26. Under its "established players" rule, everyone with fewer than 250 minutes the season before counts as -2.0; the "full forecast" uses each metric's own values for rookies too:
 
 | Metric | Established players | Full forecast |
 | --- | --- | --- |
-| **basketball_ml forecast** | **.182** | .188 |
 | GRBNU | **.182** | **.205** |
 | xPM (VORP.app) | .177 | .193 |
+| **basketball_ml forecast** | .175 | .192 |
 | Danny Harlan's EPM projection | .172 | .179 |
 | Pulse | .171 | .177 |
 | LOKI | .170 | .196 |
@@ -380,7 +389,11 @@ Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck
 | ARC, 2-year | .152 | .156 |
 | Last season's plain RAPM | .142 | .132 |
 
-Other metrics' numbers are the benchmark's published v1.2.0 results (November 1, 2026), which added GRBNU, xPM and Danny Harlan's EPM projection. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise, so on established players the forecast is tied for first with GRBNU (.1821 against .1820). With rookies counted it is fourth: the gap is the players it can't rate yet, since putting LOKI's values in for those newcomers alone takes it to .194. Draft slot and age already set those values; height, weight and having played in a US college add nothing.
+Other metrics' numbers are the benchmark's published v1.2.0 results (November 1, 2026), which added GRBNU, xPM and Danny Harlan's EPM projection. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise: the forecast is level with xPM in both columns and with LOKI with rookies counted, and behind GRBNU in both (by .007 on established players and .013 with rookies).
+
+College stats raised the full forecast from .188 to .192; they can't move the other column, where every newcomer counts as -2.0. The rest of the gap is still mostly newcomers: with LOKI's values for the players ours has no rating for, the full forecast would reach .195.
+
+The established-player score also depends on where a metric puts its zero, because the -2.0 given to newcomers doesn't move with it: adding half a point to all our values raises it to .179, and taking half a point off lowers it to .168. Our forecast's zero used to be an accident of the regression (see step 6), which put its established players about a point higher than other metrics' and scored .182, a tie for first. Centered on the average player, as the benchmark asks, they average +0.1 to +0.4 points a season, like LOKI's (+0.3 to +0.6) and ARC's (+0.05 to +0.3), and the score is .175.
 
 ## Shot quality (expected FG%)
 
@@ -664,7 +677,8 @@ src/basketball_ml/
 │   ├── stints.py      # who is on the court, stint by stint, with expected threes and free throws
 │   ├── box.py         # per-game box scores from the play-by-play
 │   ├── rapm.py        # ridge-regression ratings, box-score priors, luck adjustment and backtest
-│   ├── projection.py  # next-season forecast: rookies by draft pick and age, playing time, aging
+│   ├── projection.py  # next-season forecast: rookies by draft pick, age and college stats, playing time, aging
+│   ├── college.py     # NCAA box scores matched to NBA players, team margins and per-40-minute stats
 │   ├── bench.py       # the Hoop Impact Bench game-margin test
 │   └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
 ├── shots/
@@ -698,6 +712,6 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **Better rookie values** for the impact forecast (college or international stats), where GRBNU, LOKI and xPM are ahead; height and weight add nothing.
+- **Better rookie values** for the impact forecast: international stats for players who come from Europe, where GRBNU and LOKI are still ahead (college stats are in; height and weight add nothing).
 - **Injury reports** for the live predictions: the official PDFs and the sports sites that repeat them are blocked from the environment this is built in, so absences still come from `--out`.
 - **Tracking for every season**: stats.nba.com's shooting splits by closest defender, drives, catch-and-shoot and rim protection (since 2013-14) through `nba_api`, from a connection that can reach it.

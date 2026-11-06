@@ -1,8 +1,14 @@
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 
-from basketball_ml.impact import fit_rapm, game_stints, player_columns, player_seconds, predict_margin
+from basketball_ml.impact import (
+    fit_rapm,
+    game_stints,
+    player_columns,
+    player_seconds,
+    predict_margin,
+)
 from basketball_ml.predictions import lineup_rapm
 
 HOME = [1, 2, 3, 4, 5]
@@ -210,6 +216,7 @@ def test_projection_learns_that_high_picks_and_rotation_players_are_better():
     assert coef["new_log_pick"] < -1
     out = project(rated, 2022, bio, coef, players=range(30)).set_index("player_id")
     assert len(out) == 30 and out.loc[15, "rapm"] > out.loc[29, "rapm"] + 2
+    assert abs(np.average(out.loc[range(15), "rapm"], weights=out.loc[range(15), "possessions"])) < 1e-9  # centered
 
     # The same projection, learned from earlier seasons only, added to every in-season refresh.
     from basketball_ml.impact import project_schedule, projection_coefficients
@@ -223,6 +230,84 @@ def test_projection_learns_that_high_picks_and_rotation_players_are_better():
     late = projected[(projected["season"] == 2022) & (projected["as_of"] == projected["as_of"].max())]
     late = late.set_index("player_id")
     assert len(late) == 30 and late.loc[15, "rapm"] > late.loc[29, "rapm"] + 2
+
+
+def test_newcomer_features_flag_returning_players_stashed_picks_and_college_seasons():
+    from basketball_ml.impact import college, features
+
+    stats = {stat: 0.0 for stat in college.STATS}
+    bio = pd.DataFrame([
+        {"pick": 3.0, "draft_year": 2021.0, "first_nba": 2022.0, "college_season": 2021.0, **stats, "c_ts": 1.5},
+        {"pick": 40.0, "draft_year": 2018.0, "first_nba": 2022.0, "college_season": np.nan, **stats},  # stashed abroad
+        {"pick": np.nan, "draft_year": np.nan, "first_nba": 2016.0, "college_season": 2014.0, **stats},  # back after years away
+        {"pick": 10.0, "draft_year": 2015.0, "first_nba": 2016.0, "college_season": 2015.0, **stats, "c_ts": 2.0}],
+        index=pd.Index([1, 2, 3, 4], name="player_id")).assign(birth=pd.to_datetime("2000-01-01"))
+    rated = pd.DataFrame({"player_id": [4], "possessions": [3000.0]})
+    f = features([1, 2, 3, 4], rated, 2022, bio)
+    assert f.loc[1, ["new_returning", "new_stash", "new_college", "new_c_ts"]].tolist() == [0, 0, 1, 1.5]
+    assert f.loc[2, ["new_returning", "new_stash", "new_college"]].tolist() == [0, 1, 0]
+    assert f.loc[3, ["new_returning", "new_stash", "new_college", "new_c_ts"]].tolist() == [1, 0, 0, 0]  # college too old
+    assert f.loc[4, ["new_college", "new_c_ts", "rated_const"]].tolist() == [0, 0, 1]  # rated: no newcomer terms
+
+
+def test_college_seasons_match_nba_players_by_name_and_school():
+    from basketball_ml.impact import college
+
+    assert college.normalize_name("Gary Trent Jr.") == "gary trent"
+    assert college.normalize_name("Dāvis Bertāns") == "davis bertans"
+    assert college.school_key("University of Kentucky") == "kentucky" and college.school_key("Ohio State") == "ohio st"
+    seasons = pd.DataFrame({"athlete_id": [10, 11, 12], "name": ["Jalen Smith", "Jalen Smith", "Ty Green"],
+                            "school": ["Maryland", "Akron", "North Carolina"], "season": [2020, 2020, 2021],
+                            "minutes": [900.0, 1100.0, 700.0]})
+    players = pd.DataFrame({"bref_id": ["smithja04", "greenty01", "nobody01"],
+                            "name": ["Jalen Smith", "Ty Green", "No Body"],
+                            "colleges": ["Maryland", "UNC", np.nan], "first_nba": [2021, 2022, 2022]})
+    m = college.match_players(players, seasons).set_index("bref_id")
+    assert m.loc["smithja04", "athlete_id"] == 10 and m.loc["smithja04", "by"] == "name and school"
+    assert m.loc["greenty01", "athlete_id"] == 12 and m.loc["greenty01", "by"] == "name"  # school spelled differently
+    assert "nobody01" not in m.index
+
+
+def test_college_team_ratings_and_rates():
+    from basketball_ml.impact import college
+
+    # A beats B by 10 and B beats C by 10, all at home: A > B > C, B in between.
+    box = pd.DataFrame({"game_id": [1, 1, 2, 2], "team_id": [1, 2, 2, 3], "opponent_team_id": [2, 1, 3, 2],
+                        "home_away": ["home", "away", "home", "away"], "team_score": [80, 70, 75, 65],
+                        "opponent_team_score": [70, 80, 65, 75]})
+    r = college.team_ratings(box, damping=0.01)
+    assert r[1] > r[2] > r[3] and abs(r[2]) < 1
+    seasons = pd.DataFrame({"athlete_id": [1], "season": [2024], "minutes": [800.0], "games": [25],
+                            "points": [400.0], "assists": [100.0], "offensive_rebounds": [40.0],
+                            "defensive_rebounds": [120.0], "steals": [30.0], "blocks": [20.0], "turnovers": [60.0],
+                            "fouls": [50.0], "field_goals_attempted": [300.0], "free_throws_attempted": [100.0],
+                            "free_throws_made": [80.0], "three_point_field_goals_attempted": [120.0],
+                            "team_rating": [12.0]})
+    f = college.college_features(seasons).iloc[0]
+    assert f["c_pts"] == 20 and f["c_ast"] == 5 and f["c_3par"] == 0.4 and f["c_team"] == 1.2 and f["c_mpg"] == 0.8
+    assert abs(f["c_ts"] - 400 / (2 * 344)) < 1e-12 and f["c_ftp"] == 87 / 110
+    assert college.college_features(seasons.assign(minutes=150.0)).empty
+
+
+def test_weighted_ridge_matches_scikit_learn_and_penalizes_college_stats_more():
+    from sklearn.linear_model import Ridge
+
+    from basketball_ml.impact.projection import (
+        COLLEGE_FEATURES,
+        FEATURES,
+        penalties,
+        weighted_ridge,
+    )
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(400, 3))
+    y = X @ np.array([1.0, -2.0, 0.5]) + 3 + rng.normal(size=400)
+    w = rng.uniform(1, 10, 400)
+    assert np.allclose(weighted_ridge(X, y, w, np.ones(3)), Ridge(alpha=1.0).fit(X, y, sample_weight=w).coef_)
+    shrunk = weighted_ridge(X, y, w, np.array([1.0, 1.0, 1e6]))
+    assert abs(shrunk[2]) < 0.05 and abs(shrunk[0] - 1) < 0.2
+    p = dict(zip(FEATURES, penalties()))
+    assert p["new_log_pick"] == 1.0 and all(p[name] > 1e4 for name in COLLEGE_FEATURES)
 
 
 def test_bench_scores_minutes_weighted_team_ratings(tmp_path):

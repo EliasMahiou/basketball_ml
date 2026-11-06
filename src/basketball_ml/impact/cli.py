@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .. import pbp
@@ -144,7 +145,9 @@ def run_ratings(args: argparse.Namespace) -> None:
     from ..twins.similarity import _normalize
 
     season = args.season or args.last_season
-    table = load_before(args.data_dir, args.first_season, args.last_season)[season + 1]
+    table = load_before(args.data_dir, args.first_season, args.last_season)[season + 1].copy()
+    for col in ("orapm", "drapm", "rapm"):      # on the forecast's scale: the average possession is 0
+        table[col] -= np.average(table[col], weights=table["possessions"])
     forecasts = load_forecasts(args.data_dir, args.bio_dir, args.first_season, args.last_season)
     forecast = forecasts[forecasts["season"] == season + 1].set_index("player_id")["rapm"]
     table["forecast"] = table["player_id"].map(forecast)

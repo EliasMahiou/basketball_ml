@@ -11,12 +11,14 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
 | [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team |
 | [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player, live for the season in progress |
+| [`tracking`](#player-tracking) | Ready | What the arena cameras add: how open each shot was (from the 2014-15 shot logs and the raw 2015-16 positions), its effect on expected FG% and shot making, and the defenders who make shooters miss |
 
 ## Installation
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e . pytest
+pip install -e ".[tracking]"   # adds py7zr, only to read the raw 2015-16 tracking
 ```
 
 ### Data
@@ -35,6 +37,8 @@ Other public sources, also downloaded on first use:
 - **Hoop Impact Bench**: games and minutes of [lumahoops/hoop-impact-bench](https://github.com/lumahoops/hoop-impact-bench) (CC BY 4.0), into `data/bench/`.
 - **Closing betting lines**: [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), into `data/odds/` (market benchmark).
 - **The season in progress**: the NBA's live feed (schedule, box scores and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`.
+- **Tracking shot logs of 2014-15**: published by the NBA's stats site and mirrored in public GitHub repositories such as [SergioLlana/nba-shot-analysis](https://github.com/SergioLlana/nba-shot-analysis), into `data/tracking/` (player tracking).
+- **Raw tracking of 2015-16**: the SportVU positions of [linouk23/NBA-Player-Movements](https://github.com/linouk23/NBA-Player-Movements), read one game at a time; only the shot features are kept, in `data/tracking/sportvu/` (player tracking).
 
 ## Statistical twins
 
@@ -154,8 +158,8 @@ Limits: the 3-point attempt rate range only holds 71% of the time, because its l
     - **Form**: average margin over each team's last 10 games
     - **Season**: season-to-date average margin
     - **Rest**: days since each team's previous game, and back-to-back flags
-    - **Lineup strength**: who actually played. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games. A team's strength is the sum over its 10 best players in the game. Who plays is known shortly before tip-off from injury reports, so the backtest treats it as known.
-    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the players who play, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons, with the offense and defense box-score prior, the luck adjustment and the forecast layer (rookies by draft pick and age, playing time, aging).
+    - **Lineup strength**: each team is expected to field the players of its previous game. A player who is hurt keeps missing games, so his absence carries over; one back from injury is missed once. Each player's production per game (points + assists + rebounds + steals + blocks - turnovers, from the play-by-play) is averaged over the season so far, falling back to last season until he has 3 games, and a team's strength is the sum over its 10 best players. A team's first game of a season has no previous game: its players stand in for the announced roster.
+    - **Lineup impact**: the [RAPM](#player-impact-rapm) ratings of the same players, weighted by their usual minutes. Ratings are refit every 30 days during the season from the games already played plus the two previous seasons, with the offense and defense box-score prior, the luck adjustment and the forecast layer (rookies by draft pick and age, playing time, aging).
 3. **Models**: logistic regression and gradient boosting on those features, trained on all earlier seasons and tested on the next one.
 
 ### Usage
@@ -169,6 +173,7 @@ basketball-ml predict SAS OKC --out-home "Victor Wembanyama"   # SAS drops to 44
 basketball-ml predict WAS OKC --next-season   # season opener: ratings regressed, form reset
 basketball-ml ratings                         # Elo table after the last season loaded
 basketball-ml games-backtest --market --calibration docs/calibration.png   # walk-forward evaluation
+basketball-ml games-backtest --lineups played  # the same, knowing who played (only possible after the game)
 ```
 
 ### Backtest
@@ -180,11 +185,18 @@ Out of sample from 2017-18 to 2025-26 (10,746 games), with each season predicted
 | Always the home team | 55.9% | 0.687 | 0.247 |
 | Elo alone | 65.1% | 0.622 | 0.217 |
 | Logistic regression, without lineups | 65.6% | 0.620 | 0.216 |
-| Logistic regression, with lineup strength | 66.2% | 0.612 | 0.212 |
-| **Logistic regression, with lineup strength and impact** | **67.4%** | **0.603** | **0.208** |
-| Gradient boosting, same features | 67.3% | 0.605 | 0.209 |
+| Logistic regression, with lineup strength | 66.0% | 0.616 | 0.214 |
+| **Logistic regression, with lineup strength and impact** | **66.6%** | **0.612** | **0.212** |
+| Gradient boosting, same features | 66.1% | 0.615 | 0.213 |
+| *Logistic regression, knowing who played (not possible before the game)* | *67.4%* | *0.603* | *0.208* |
 
-Lower log loss and Brier score are better. Knowing who plays is the biggest gain after Elo, and the two lineup features add up: box-score strength alone gives a log loss of 0.6117, RAPM impact alone 0.6040, both 0.6027. The better player ratings of the [impact module](#player-impact-rapm) (offense and defense prior, luck adjustment, forecast layer) cut the log loss from 0.6058 to 0.6027 and raised accuracy from 67.1% to 67.4%. Refreshing the impact ratings every month, instead of only using previous seasons, lets rookies and players whose role changed move away from their starting value; on 2017-18 to 2024-25 it raised accuracy from 66.3% to 66.6%. 2025-26 was the most predictable of the nine test seasons (70.7% accuracy, log loss 0.573), and 2020-21 the least accurate (65.0%). A "missing production" feature (the summed production of regulars who sat out) helped less than lineup strength on 2017-18 to 2024-25 (log loss 0.619) and added nothing on top of it, so it isn't used. Neither did travel: the distance each team flew since its previous game, time zones crossed, consecutive road games and the altitude of Denver and Utah together moved the log loss by 0.0002.
+Lower log loss and Brier score are better. The lineup features add up: box-score strength alone gives a log loss of 0.6157, RAPM impact alone 0.6125, both 0.6116. 2025-26 was the most predictable of the nine test seasons (69.4% accuracy, log loss 0.585), and 2020-21 the least (63.2%, 0.635).
+
+**Who plays.** Earlier versions of this table used the players who actually played in each game, on the grounds that injury reports announce absences before tip-off. That reached 67.4% and a log loss of 0.603, but it also knew about late scratches, coaches' decisions and who got minutes in a blowout, none of which is known before the game. With lineups from earlier games only, about half of what the lineup features seemed to add is gone. The regular rotation with no injury news at all does a little worse than the previous game (66.3%, 0.6154), and weighting each player by his chance of playing, given the games he just missed, does no better than the previous game (0.6117). Real injury reports sit somewhere between the previous game and knowing who played; this repo can't read them.
+
+**Settings chosen on test seasons.** The Elo home edge was picked on 2017-18 to 2020-21 and the RAPM settings on 2015-16 to 2018-19, all inside or next to the test window. The logistic model barely depends on them: any home edge from 0 to 100 Elo points gives the same log loss (0.6116 to 0.6117), since the model learns its own home advantage. Only the "Elo alone" row is flattered: picked on 2015-16 and 2016-17 instead, the edge would be 80 and that row 0.626. On 2021-22 to 2025-26, after every season used for a choice, the model is 67.4% right with a log loss of 0.608 (6,150 games).
+
+With the players who actually played, the better ratings of the [impact module](#player-impact-rapm) (offense and defense prior, luck adjustment, forecast layer) had cut the log loss from 0.6058 to 0.6027, and refreshing them every month had raised accuracy by 0.3 points. A "missing production" feature (the summed production of regulars not expected to play) adds nothing on top of lineup strength (0.6116 with or without it), so it isn't used. Neither did travel: the distance each team flew since its previous game, time zones crossed, consecutive road games and the altitude of Denver and Utah together moved the log loss by 0.0002.
 
 ### Calibration
 
@@ -192,7 +204,7 @@ A win probability is only useful if it means what it says: games predicted at 70
 
 ![Calibration chart](docs/calibration.png)
 
-Both models track the diagonal, with an average gap of 1.6 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (0.6058 to 0.6050), so it isn't used.
+Both models track the diagonal, with an average gap of 1.6 points between the predicted and the actual win rate. On 2017-18 to 2024-25, Elo with FiveThirtyEight's 100-point home edge was off by 6 points on average, because it kept favoring home teams as if it were still 2013. Lowering the edge to 60 points fixed its calibration and its log loss (0.635 to 0.626). The logistic model still overrates home teams by about 1.5 points, since each season's drop in home advantage can't be learned from the seasons before it. Weighting recent seasons more (half-life of 3 seasons) cut that bias to 1.0 point but barely moved the log loss (by 0.0008, in an earlier version of the model), so it isn't used.
 
 ### Against the betting market
 
@@ -201,30 +213,32 @@ Closing betting lines are the hardest benchmark: they know everything public bef
 | | Accuracy | Log loss | Brier score |
 | --- | --- | --- | --- |
 | Closing line | 67.5% | 0.6007 | 0.2070 |
-| Model | 67.0% | 0.6072 | 0.2098 |
-| Model given the closing line as one more feature | 67.6% | 0.5999 | 0.2066 |
+| Model | 66.2% | 0.6156 | 0.2135 |
+| Model given the closing line as one more feature | 67.4% | 0.6008 | 0.2071 |
 
-The market is better in every season, by 0.0066 in log loss (paired standard error 0.0014). When the two disagree by more than 10 points, the market is almost always right: in the 781 games where the model gave the home team 10+ points more than the line (58% against 44% on average), the home team won 45%. Most of those gaps are likely what a box score can't see, such as minutes limits, rest decisions and late scratches. The model does add a little to the line: with the line's log-odds as a feature, it beats the line alone in 7 of 9 seasons, by 0.0007 in log loss (standard error 0.0006), too small to be sure of.
+The market is better in all 9 seasons, by 0.0149 in log loss (paired standard error 0.0019). When the two disagree by more than 10 points, the market is almost always right: in the 1,196 games where the model gave the home team 10+ points more than the line (59% against 43% on average), the home team won 44%; in the 712 where the line was 10+ points higher (65% against 50%), it won 64%. Most of those gaps are what the model can't see: injury news, minutes limits and rest decisions. The model adds nothing to the line: with the line's log-odds as a feature, the log loss is 0.6008, against 0.6007 for the line alone. The small gain reported before (0.0007) came from knowing who played.
 
 ### The season in progress
 
 The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score and play-by-play, and today's odds from several sportsbooks). The play-by-play is in the cdn.nba.com format, converted like 2025-26's. `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and refit the player ratings from the season's own stints, as in the backtest: every 30 days for past games, and through the last game played for upcoming ones. Files of finished games are cached in `data/live/`.
 
-Through November 2, 2026, the 107 games of 2026-27 predicted that way (from the games before each one, with the players who played) went 66.4% right with a log loss of 0.584; Elo alone was 60.7% right (log loss 0.634). On November 4, 2026:
+Through November 4, 2026, the 121 games of 2026-27 predicted that way (from the games before each one, each team with the players of its previous game) went 66.9% right with a log loss of 0.610; Elo alone was 60.3% right (log loss 0.632). That's too few games to be sure of either number: the 95% intervals, from resampling the games, are 58.7% to 75.2% for the accuracy and 0.540 to 0.680 for the log loss, and the model's edge over Elo (0.023) goes from -0.050 to +0.007. For November 6, 2026, before two of the games had odds:
 
 ```
           home win sportsbooks   elo lineup impact rest
 game
-PHI @ DET      70%         56%  +189          +3.1   +0
-ATL @ WAS      35%         42%  -157          -5.1   +0
-MIL @ BOS      89%         81%  +362          +9.7   +0
-CHI @ NYK      83%         82%  +295          +6.1   +0
-DAL @ SAS      88%         83%  +305         +11.2   +0
-LAL @ SAC      14%         17%  -186         -13.0   +0
-MIA @ LAC      42%         34%   +53          -5.4   +0
+WAS @ ATL      79%           -  +291          +5.6   +0
+BOS @ CHA      34%           -   -84          -5.7   +0
+PHI @ CLE      59%         44%   +67          +1.9   +0
+UTA @ DAL      73%         69%  +184          +1.2   +0
+OKC @ MEM      40%         39%  -174          -4.7   +0
+TOR @ MIL      29%         30%  -136          -6.7   +0
+MIN @ NOP      33%         39%   -94          -8.0   +0
+POR @ LAL      65%         57%   +93          +2.8   +0
+SAS @ SAC      12%         12%  -273         -15.1   +0
 ```
 
-The model can't see injuries announced before a game: list players who won't play with `--out`.
+Each team is expected to field the players of its latest game; the model can't see injury news, so list players who won't play with `--out`. A gap like Cleveland's 15 points is more likely news the model lacks than an edge.
 
 ## Play-by-play style
 
@@ -433,7 +447,7 @@ Shot making holds up from one season to the next as well as eFG% does: it is a s
 - Last season's xFG% and shot making, weighted separately, predict next season's FG% better than last season's FG% (error 3.28 vs 3.40 points, each pair of seasons predicted from the others).
 - Last season's shot making predicts next season's shot making much better than FG% does (r 0.63 vs 0.28).
 
-Without tracking data, shot making also includes how open the shots were. Free throws are left out, so players get no credit for drawing fouls.
+How open each shot was isn't in the shot charts. The 2014-15 tracking logs and the raw 2015-16 positions show that it matters for xFG but changes little about who the good shot makers are (see [Player tracking](#player-tracking)). Free throws are left out, so players get no credit for drawing fouls.
 
 ## Live win probability
 
@@ -503,6 +517,73 @@ Lower is better. The events of a game are correlated, so differences are tested 
 - **Boosting** needs large leaves not to overfit the pre-game spread, which is the same all game, so it blurs rare end-game states: it gave Detroit 6.6% down 5 with 4 seconds left.
 - **WPA** credits only the players on each play: defense counts through blocks, steals, defensive rebounds and fouls, so it favors high-volume players and rebounders. The 70/30 and half splits are conventions.
 
+## Player tracking
+
+![FG% by the closest defender's distance](docs/tracking_defender.png)
+
+Cameras in every NBA arena turn the video of each game into tracking data: where the ten players and the ball are, 25 times a second. That is the useful form of video for this project. The positions themselves are private, but two public slices exist, and both download from here:
+
+- **The 2014-15 shot logs**: for 128,069 shots (October 2014 to early March 2015), the closest defender and his distance when the ball left the shooter's hand, the shot clock, and the shooter's dribbles and touch time. The NBA's stats site published them; copies are in many public GitHub repositories, and the three checked are byte for byte the same.
+- **Raw SportVU positions** for the first half of 2015-16, in [linouk23/NBA-Player-Movements](https://github.com/linouk23/NBA-Player-Movements): 621 readable games, through January 23 (6 MB of 7z and 110 MB of JSON per game).
+
+### Method
+
+1. Each logged shot is matched to the play-by-play shot charts by game, shooter and time. The tracked release comes 0 to 8 seconds before the time the scorer wrote down, most often 2 to 3. 125,404 of the 128,069 logged shots match, agreeing on the result and the shot value.
+2. The xFG model is fit with and without the tracking features, by 5-fold cross-validation over whole games of 2014-15. That season's shot types give away part of the result (see [Shot quality](#shot-quality-expected-fg)), so the main comparison adds tracking to the coarse shot kind (dunk, layup, hook, tip, jumper).
+3. In the raw 2015-16 positions, each shot of the shot charts is found by its release. Each time the ball reaches the rim area (within 3 feet of the basket's center, 7.5 to 14 feet high) between 6 seconds before and 1 second after the scorer's time, the release is the last frame of the 3 seconds before with the ball within 3 feet of the shooter; the one kept is closest to 2.1 seconds before the scorer's time. A shot that never reaches the rim (most blocked shots and airballs) is released the last time the ball was in the shooter's hands before its highest point. At the release come the closest defender's distance, the defenders within 4 and 6 feet, how much the closest defender closed in over the last 0.4 seconds, how long the shooter had held the ball, his speed and the shot clock.
+
+### Usage
+
+```bash
+basketball-ml tracking-shots --chart docs/tracking_defender.png   # downloads the logs (16 MB) into data/tracking/
+basketball-ml tracking-sportvu --games 50   # the raw positions of the first 50 games (6 MB each, needs pip install py7zr)
+basketball-ml tracking-sportvu              # all of them: about 4 GB to download once, 7 MB of shot features kept in data/tracking/sportvu/
+```
+
+### Does it help?
+
+| Model | Log loss | Brier score | AUC |
+| --- | --- | --- | --- |
+| Location + game situation | 0.6454 | 0.2277 | 0.634 |
+| + shot kind | 0.6426 | 0.2265 | 0.645 |
+| + closest defender's distance | 0.6377 | 0.2244 | 0.655 |
+| **+ all tracking (defender, shot clock, dribbles, touch time)** | **0.6343** | **0.2231** | **0.660** |
+| Shot type instead of kind (the xFG model) | 0.6278 | 0.2196 | 0.679 |
+| Shot type + all tracking | 0.6139 | 0.2138 | 0.701 |
+
+- **Tracking is worth more than anything else the shot charts lack.** The defender's distance alone cuts the log loss by 0.0049 (95% interval 0.0043 to 0.0056, resampling games), and all four features by 0.0084, three times what the shot kind adds to the location. On top of the shot type the gain is 0.014.
+- **Openness matters most from outside.** Against what location and shot kind predict, threes with a defender within 2 feet went in 10.7 points less often (22.2% against 32.9%) and those with nobody within 6 feet 2.7 points more often. Tightly guarded twos went in 5.1 points less often and wide-open ones 7.2 more.
+- **Shot making barely moves.** For the 216 players with 250+ tracked shots, shot making with and without tracking correlates at 0.96, and it holds up between odd and even games about as well either way (r 0.52 without, 0.50 with). The shot making of [Shot quality](#shot-quality-expected-fg) is mostly skill, not open looks. The biggest moves are about 2 points: players who got open looks lose (Jared Dudley, Marcin Gortat, Al Horford), and players who took contested shots gain (Amar'e Stoudemire, Kobe Bryant, Dwight Howard, James Harden). Kyle Korver, Chris Paul and Stephen Curry were the best shot makers with or without it.
+- **Defenders who make shooters miss.** On shots a player contested (the closest defender within 6 feet), Rudy Gobert held shooters 13.3 points below what the shot's location and kind predict (402 shots), ahead of Andrew Bogut (-11.8), Marc Gasol (-8.2), Serge Ibaka, Josh Smith and Anthony Davis (-7.8 to -7.9). It's less stable between odd and even games than shot making (r 0.23): the closest defender isn't always the one responsible for the shot.
+
+### From the raw positions
+
+The 2015-16 positions agree with the NBA's own numbers. A shot's distance from the basket is within 1.33 feet of the shot chart's (median; correlation 0.946, 96.9% within 6 feet), and the closest defender's distance has the spread of the 2014-15 logs:
+
+| Closest defender (ft) | 10th percentile | 25th | Median | 75th | 90th |
+| --- | --- | --- | --- | --- | --- |
+| 2015-16, from the positions | 1.41 | 2.25 | 3.46 | 4.97 | 6.95 |
+| 2014-15, NBA shot logs | 1.40 | 2.30 | 3.70 | 5.30 | 7.20 |
+
+On 97,712 shots of 621 games, by 5-fold cross-validation over games:
+
+| Model | Log loss | Brier score | AUC |
+| --- | --- | --- | --- |
+| Location + game situation + shot kind | 0.6473 | 0.2285 | 0.633 |
+| + closest defender's distance | 0.6390 | 0.2251 | 0.649 |
+| **+ defenders within 4 and 6 ft, closing in, touch time, shooter's speed, shot clock** | **0.6314** | **0.2217** | **0.662** |
+
+- **The positions give more than the logs.** The defender's distance alone cuts the log loss by 0.0082 (95% interval 0.0074 to 0.0091), against 0.0049 with the 2014-15 logs, and the other features double the gain, to 0.0159 (0.0149 to 0.0170). On top of the defender, touch time adds the most (0.0042), then the shot clock (0.0019), how much the defender closed in (0.0017), the shooter's speed (0.0010) and the defenders within 4 and 6 feet (0.0005 and 0.0004).
+- **The measure carries over.** Fit on the 2014-15 logs and given the distances computed from the 2015-16 positions, the model with the defender beats the one without on 2015-16 shots: log loss 0.6400 against 0.6469, AUC 0.650 against 0.636.
+- **Not an artifact of finding the release.** On the 93,795 shots whose release was found from the ball reaching the rim, which leaves out most blocked shots and airballs, the gains are 0.0077 and 0.0146.
+- **The same pattern.** Threes with a defender within 2 feet went in 7.0 points less often than location and shot kind predict, those with nobody within 6 feet 4.0 points more often; twos 5.8 less and 12.1 more.
+
+### What about video and pictures?
+
+- **Broadcast video** can be turned into tracking with computer vision: find the players, map the court, follow them across camera cuts. That needs footage the NBA doesn't license for this, GPUs this project doesn't have and labeled frames, to rebuild what the arena cameras already measure better.
+- **Photos** (headshots, action shots) add nothing once box scores are known; a model would learn what players look like.
+- **Tracking for other seasons**: stats.nba.com publishes each player's and team's shooting by closest-defender distance, shot clock, dribbles and touch time, plus drives, catch-and-shoot and rim protection, for every season since 2013-14. Those are season or game totals, not shots, and the site is blocked from the environment this project is built in, but `nba_api` reaches it from a home connection.
+
 ## Project layout
 
 ```
@@ -521,7 +602,7 @@ src/basketball_ml/
 │   └── cli.py         # basketball-ml project / backtest
 ├── predictions/
 │   ├── games.py       # game results, Elo and pre-game features
-│   ├── availability.py # who played in each game, lineup strength and impact
+│   ├── availability.py # who played, who is expected to play, lineup strength and impact
 │   ├── model.py       # win-probability models, walk-forward evaluation and calibration
 │   ├── market.py      # closing betting lines, matched to games, and the market benchmark
 │   ├── live.py        # the season in progress from the NBA's live feed: schedule, box scores, play-by-play, odds
@@ -545,13 +626,18 @@ src/basketball_ml/
 │   ├── making.py      # league re-centering, arena correction, shrinkage, team tables, persistence
 │   ├── plot.py        # half-court map of expected FG%
 │   └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality
-└── winprob/
-    ├── states.py      # game states from the play-by-play: clock, score, possession inferred from the events
-    ├── model.py       # Brownian, logistic and boosting models, walk-forward evaluation and calibration
-    ├── wpa.py         # win probability added per player, clutch and on-court, biggest comebacks
-    ├── live.py        # the season in progress from the NBA's live feed: Elo, play-by-play, the fitted model
-    ├── plot.py        # game chart and calibration chart
-    └── cli.py         # basketball-ml winprob-backtest / winprob-game / winprob-live / wpa
+├── winprob/
+│   ├── states.py      # game states from the play-by-play: clock, score, possession inferred from the events
+│   ├── model.py       # Brownian, logistic and boosting models, walk-forward evaluation and calibration
+│   ├── wpa.py         # win probability added per player, clutch and on-court, biggest comebacks
+│   ├── live.py        # the season in progress from the NBA's live feed: Elo, play-by-play, the fitted model
+│   ├── plot.py        # game chart and calibration chart
+│   └── cli.py         # basketball-ml winprob-backtest / winprob-game / winprob-live / wpa
+└── tracking/
+    ├── shotlogs.py    # 2014-15 tracking shot logs: download, matching to the shot charts, xFG with tracking, contests
+    ├── sportvu.py     # raw 2015-16 positions: each shot's release, the defenders around it, touch time, speed
+    ├── plot.py        # FG% by the closest defender's distance
+    └── cli.py         # basketball-ml tracking-shots / tracking-sportvu
 tests/
 ```
 
@@ -566,5 +652,6 @@ pytest
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
 - **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
-- **Tracking stats** (drives, catch & shoot, rim protection) via `nba_api`.
+- **Injury reports** for the live predictions: the official PDFs and the sports sites that repeat them are blocked from the environment this is built in, so absences still come from `--out`.
+- **Tracking for every season**: stats.nba.com's shooting splits by closest defender, drives, catch-and-shoot and rim protection (since 2013-14) through `nba_api`, from a connection that can reach it.
 - **Shot quality for the season in progress**: the live feed's play-by-play has each shot's location, so expected FG% and shot making could follow the season like the ratings and the win probability do.

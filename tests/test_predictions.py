@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import numpy as np
 import pandas as pd
 
@@ -100,10 +102,56 @@ def test_expected_lineup_drops_players_marked_out():
     from basketball_ml.predictions import expected_lineup
     games, _ = add_features(_fake_games(1))
     apps = _fake_appearances(games)
-    full, players = expected_lineup(apps, games, "AAA")
-    without, _ = expected_lineup(apps, games, "AAA", out=["P1"])
+    full, players = expected_lineup(apps, games, "AAA", rule="regulars")
+    without, _ = expected_lineup(apps, games, "AAA", out=["P1"], rule="regulars")
     assert "P1" in set(players["player"])
     assert np.isclose(full - without, 30.0)
+
+
+def test_expected_lineup_previous_rule_takes_the_latest_game():
+    from basketball_ml.predictions import expected_lineup
+    games, _ = add_features(_fake_games(1))
+    apps = _fake_appearances(games)
+    aaa = games[(games.home == "AAA") | (games.away == "AAA")]
+    star_games = set(apps.loc[apps.player_id == 1, "game_id"])
+    upto = games[games.game_id <= aaa.game_id[~aaa.game_id.isin(star_games)].iloc[-1]]    # star sat the last one
+    _, latest = expected_lineup(apps, upto, "AAA")
+    _, regulars = expected_lineup(apps, upto, "AAA", rule="regulars")
+    assert "P1" not in set(latest["player"]) and "P1" in set(regulars["player"])
+
+
+def test_expected_lineups_come_from_earlier_games():
+    from basketball_ml.predictions.availability import expected_lineups
+    games, _ = add_features(_fake_games(2))
+    apps = _fake_appearances(games)
+    played = expected_lineups(games, apps, "played")
+    previous = expected_lineups(games, apps, "previous")
+    regulars = expected_lineups(games, apps, "regulars")
+    for season, block in games.groupby("season"):
+        aaa = block[(block.home == "AAA") | (block.away == "AAA")]["game_id"].tolist()
+        assert previous[(aaa[0], "AAA")] == played[(aaa[0], "AAA")]     # first game: the roster
+        for before, game in pairwise(aaa):
+            assert previous[(game, "AAA")] == played[(before, "AAA")]
+            assert 1 in regulars[(game, "AAA")] or game == aaa[1] and 1 not in played[(aaa[0], "AAA")]
+
+
+def test_top_sum_counts_players_by_their_chance_to_play():
+    from basketball_ml.predictions.availability import top_sum
+    assert top_sum([(10.0, 1.0), (30.0, 1.0), (20.0, 1.0)], 2) == 50.0
+    assert top_sum([(30.0, 1.0), (20.0, 0.5), (10.0, 1.0)], 2) == 45.0
+
+
+def test_availability_with_previous_lineups_sees_absences_a_game_late():
+    from basketball_ml.predictions import add_availability
+    from basketball_ml.predictions.availability import expected_lineups
+    games, _ = add_features(_fake_games(1))
+    apps = _fake_appearances(games)
+    out = add_availability(games, apps, lineups=expected_lineups(games, apps, "previous"))
+    aaa = out[(out.home == "AAA") | (out.away == "AAA")].reset_index(drop=True)
+    side = np.where(aaa.home == "AAA", aaa.strength_home, aaa.strength_away)
+    star = aaa.game_id.isin(apps.loc[apps.player_id == 1, "game_id"]).to_numpy()
+    later = np.arange(len(aaa)) >= 10
+    assert (side[1:][later[1:] & ~star[:-1]] < side[1:][later[1:] & star[:-1]].min()).all()
 
 
 def test_calibration_bins_and_error():

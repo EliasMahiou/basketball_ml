@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 
 from ..cache import cached_csv
-from .availability import (DEFAULT_SECONDS, MIN_GAMES, add_availability, add_impact, build_player_games,
-                           expected_lineup, lineup_rapm)
+from .availability import (DEFAULT_SECONDS, LINEUP_RULES, MIN_GAMES, add_availability, add_impact,
+                           build_player_games, expected_lineup, expected_lineups, lineup_rapm)
 from .games import IMPACT_FEATURES, add_features, build_games
 from .model import calibration, calibration_error, evaluate, make_model, walk_forward
 
@@ -38,6 +38,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     b.add_argument("--market", action="store_true",
                    help="Also compare with closing betting lines (downloaded to --odds-dir on first use)")
     b.add_argument("--odds-dir", default="data/odds", help="Where the betting-line file is cached")
+    b.add_argument("--lineups", choices=LINEUP_RULES, default="previous",
+                   help="Who each team is expected to field: the players of its previous game (default), its "
+                        "regular rotation, or the players who actually played (known only after the game)")
     _common(b)
     b.set_defaults(func=run_backtest)
 
@@ -67,8 +70,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     t.set_defaults(func=run_tonight)
 
 
-def _games(args: argparse.Namespace, lineups: bool = True):
-    """Games with pre-game features, the league state after the last one, and lineup data."""
+def _games(args: argparse.Namespace, lineups: bool = True, rule: str = "previous"):
+    """Games with pre-game features, the league state after the last one, and lineup data.
+
+    ``rule`` says who each team is expected to field (see :func:`expected_lineups`).
+    """
     from ..impact import player_seconds
     from ..impact.cli import load_forecasts, load_schedule, load_stints
 
@@ -80,12 +86,13 @@ def _games(args: argparse.Namespace, lineups: bool = True):
     if not lineups:
         return games, state, None
     appearances = cached_csv(data_dir / f"appearances_{tag}.csv", lambda: build_player_games(seasons, data_dir))
-    games = add_availability(games, appearances)
+    expected = None if rule == "played" else expected_lineups(games, appearances, rule)
+    games = add_availability(games, appearances, lineups=expected)
     stints = load_stints(data_dir, args.first_season, args.last_season)
     dates = games.set_index("game_id")["date"]
     ratings = load_schedule(data_dir, args.bio_dir, args.first_season, args.last_season, dates)
     seconds = player_seconds(stints)
-    games = add_impact(games, seconds, ratings)
+    games = add_impact(games, seconds, ratings, lineups=expected)
     forecasts = load_forecasts(data_dir, args.bio_dir, args.first_season, args.last_season)
     latest = forecasts[forecasts["season"] == args.last_season + 1].drop(columns="season")
     return games, state, {"appearances": appearances, "seconds": seconds, "latest_ratings": latest}
@@ -95,11 +102,16 @@ def _label(season: int) -> str:
     return f"{season - 1}-{str(season)[-2:]}"
 
 
+LINEUP_TEXT = {"previous": "each team's players from its previous game",
+               "regulars": "each team's regular rotation",
+               "played": "the players who actually played (known only after the game)"}
+
+
 def run_backtest(args: argparse.Namespace) -> None:
-    games, _, _ = _games(args)
+    games, _, _ = _games(args, rule=args.lineups)
     results = walk_forward(games, range(args.test_from, args.last_season + 1))
     print(f"{len(results)} games from {_label(args.test_from)} to {_label(args.last_season)}, "
-          f"each season predicted from earlier ones only:\n")
+          f"each season predicted from earlier ones only, with {LINEUP_TEXT[args.lineups]}:\n")
     print(evaluate(results).round(4).to_string())
     print("\nCalibration of the logistic model (share of home wins by predicted probability):\n")
     print(calibration(results).round(3).to_string())
@@ -136,18 +148,21 @@ def expected_seconds(seconds: pd.DataFrame, season: int) -> dict:
 
 
 def matchup(home: str, away: str, state, appearances: pd.DataFrame, games: pd.DataFrame, seconds: dict,
-            rating: dict, out: tuple[list[str], list[str]] = ([], []), date: pd.Timestamp | None = None):
-    """Pre-game features of ``home`` vs ``away`` after the last game in ``games``, with the regulars expected to play.
+            rating: dict, out: tuple[list[str], list[str]] = ([], []), date: pd.Timestamp | None = None,
+            rule: str = "previous"):
+    """Pre-game features of ``home`` vs ``away`` after the last game in ``games``.
 
-    ``out`` lists the home and away players who will not play. Returns the
-    features and, per side, (lineup strength, regulars, lineup impact).
+    Each team is expected to field the players of its latest game (``rule``
+    "regulars": its regular rotation), minus the players listed in ``out``
+    (home, away). Returns the features and, per side, (lineup strength,
+    players, lineup impact).
     """
     from ..impact import NEWCOMER
 
     feats = state.features(home, away, date)
     lineups = {}
     for side, team, names in (("home", home, out[0]), ("away", away, out[1])):
-        strength, regulars = expected_lineup(appearances, games, team, out=names)
+        strength, regulars = expected_lineup(appearances, games, team, out=names, rule=rule)
         minutes = {pid: seconds.get(pid, DEFAULT_SECONDS) for pid in regulars["player_id"]}
         lineups[side] = (strength, regulars, lineup_rapm(minutes, rating, NEWCOMER))
     feats["strength_diff"] = lineups["home"][0] - lineups["away"][0]
@@ -220,8 +235,9 @@ def live_season(args: argparse.Namespace) -> dict:
                              apps_now[APPEARANCE_COLUMNS]], ignore_index=True)
     seconds = pd.concat([old_seconds.loc[old_seconds["season"] == season - 1, SECONDS_COLUMNS],
                          apps_now[SECONDS_COLUMNS]], ignore_index=True)
-    recent = add_availability(recent, appearances)
-    recent = add_impact(recent, seconds, schedule.dropna(subset=["as_of"]))
+    expected = expected_lineups(recent, appearances, "previous")
+    recent = add_availability(recent, appearances, lineups=expected)
+    recent = add_impact(recent, seconds, schedule.dropna(subset=["as_of"]), lineups=expected)
     return {"model": model, "schedule": now, "season": season, "state": state, "games": recent,
             "so_far": recent[recent["season"] == season], "appearances": appearances,
             "seconds": expected_seconds(seconds, season), "rating": dict(zip(current["player_id"], current["rapm"]))}
@@ -248,7 +264,8 @@ def run_predict(args: argparse.Namespace) -> None:
     if home not in state.elo or away not in state.elo:
         raise SystemExit(f"Unknown team: use abbreviations like {', '.join(sorted(state.elo)[:5])}...")
     feats, lineups = matchup(home, away, state, appearances, games, seconds, rating,
-                             out=(_names(args.out_home), _names(args.out_away)))
+                             out=(_names(args.out_home), _names(args.out_away)),
+                             rule="regulars" if args.next_season else "previous")
     p = float(model.predict_proba(pd.DataFrame([feats])[IMPACT_FEATURES])[0, 1])
     print(f"{home} (home) vs {away}: {home} {p:.0%}, {away} {1 - p:.0%}")
     print(f"  Elo {state.elo[home]:.0f} vs {state.elo[away]:.0f}, "
@@ -276,7 +293,7 @@ def run_tonight(args: argparse.Namespace) -> None:
         y = so_far["home_win"].to_numpy(float)
         p = model.predict_proba(so_far[IMPACT_FEATURES])[:, 1]
         print(f"{_label(season)} so far, {len(so_far)} games, each predicted from the games before it "
-              f"(with the players who played): model {_scores(y, p)}; "
+              f"(with each team's players from its previous game): model {_scores(y, p)}; "
               f"Elo alone {_scores(y, so_far['elo_prob'].to_numpy())}.\n")
     upcoming = schedule[schedule["status"] != live.FINAL]
     if upcoming.empty:

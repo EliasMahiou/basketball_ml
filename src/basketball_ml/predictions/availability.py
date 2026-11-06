@@ -1,9 +1,11 @@
 """Who played in each game, and how much of a team's usual production was missing.
 
 A player "played" in a game when he appears in its play-by-play (shot, free
-throw, rebound, assist, turnover, steal, block or foul). In practice who plays
-is known shortly before tip-off from injury reports, so the model treats the
-game's actual lineup as known.
+throw, rebound, assist, turnover, steal, block or foul). Who plays is only
+partly known before tip-off, from injury reports, so the lineup features can
+use one of three lineups (see :func:`expected_lineups`): the players who
+actually played (known only once the game is over, an upper bound), the
+players of the team's previous game, or its regular rotation.
 
 Production per game is a simple box-score sum from the play-by-play:
 points + assists + rebounds + steals + blocks - turnovers.
@@ -69,19 +71,75 @@ def build_player_games(seasons: Iterable[int], data_dir: str | Path = "data/pbp"
     return pd.concat([player_games(s, data_dir) for s in seasons], ignore_index=True)
 
 
-def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 10) -> pd.DataFrame:
+LINEUP_RULES = ("played", "previous", "regulars")
+
+
+def expected_lineups(games: pd.DataFrame, appearances: pd.DataFrame, rule: str = "previous") -> dict:
+    """The players each team is expected to field in each game: ``{(game_id, team): {player_id, ...}}``.
+
+    - ``played``: the players who appeared in the game. Known only once it is
+      over, it is an upper bound on what injury reports can tell.
+    - ``previous``: the players who appeared in the team's previous game of the
+      season, from earlier games only. A player still injured keeps missing
+      games; one back from injury is missed once.
+    - ``regulars``: players whose last game was for the team, seen in one of its
+      last 10 games: the rotation with no injury news.
+
+    A team's first game of a season has no earlier game: its players stand in
+    for the roster announced before it, under every rule.
+    """
+    if rule not in LINEUP_RULES:
+        raise ValueError(f"Unknown lineup rule {rule!r}, expected one of {LINEUP_RULES}")
+    played = appearances.groupby(["game_id", "team"])["player_id"].apply(frozenset).to_dict()
+    if rule == "played":
+        return played
+    games = games.sort_values(["date", "game_id"]).reset_index(drop=True)
+    out: dict = {}
+    history: dict = defaultdict(list)   # team -> lineups of its games this season, oldest first
+    last_team: dict = {}                # player -> team of his latest game this season
+    season = None
+    for g in games.itertuples(index=False):
+        if g.season != season:
+            history.clear()
+            last_team.clear()
+            season = g.season
+        for team in (g.home, g.away):
+            actual = played.get((g.game_id, team), frozenset())
+            past = history[team]
+            if not past:
+                out[(g.game_id, team)] = actual
+            elif rule == "previous":
+                out[(g.game_id, team)] = past[-1]
+            else:
+                recent = frozenset().union(*past[-RECENT_GAMES:])
+                out[(g.game_id, team)] = frozenset(pid for pid in recent if last_team.get(pid) == team)
+        for team in (g.home, g.away):
+            actual = played.get((g.game_id, team), frozenset())
+            history[team].append(actual)
+            for pid in actual:
+                last_team[pid] = team
+    return out
+
+
+def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 10,
+                     lineups: dict | None = None) -> pd.DataFrame:
     """Add lineup features from earlier games only.
 
     - ``strength_home`` / ``strength_away``: summed per-game production of the
-      ``top`` best players who play in this game, using each player's average
-      so far this season (last season's average until he has 3 games)
+      ``top`` best players expected to play in this game, using each player's
+      average so far this season (last season's average until he has 3 games)
     - ``missing_home`` / ``missing_away``: summed per-game production of the
       team's regular players (3+ games this season, seen in its last 10 games)
-      who did not play in this game
+      not expected to play in this game
     - ``strength_diff`` and ``missing_diff``: home minus away
+
+    ``lineups`` (from :func:`expected_lineups`) says who is expected to play;
+    by default, the players who actually played.
     """
     games = games.sort_values(["date", "game_id"]).reset_index(drop=True)
-    lineups = appearances.groupby(["game_id", "team"])["player_id"].apply(set).to_dict()
+    played = appearances.groupby(["game_id", "team"])["player_id"].apply(set).to_dict()
+    if lineups is None:
+        lineups = played
     prod = appearances.set_index(["game_id", "player_id"])["production"].to_dict()
 
     team_totals: dict = defaultdict(float)   # (team, player) -> production this season
@@ -107,19 +165,17 @@ def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 
                 d.clear()
             season = g.season
         for side, team in (("home", g.home), ("away", g.away)):
-            playing = lineups.get((g.game_id, team), set())
-            values = sorted((average(pid) for pid in playing), reverse=True)
-            out[f"strength_{side}"].append(float(sum(values[:top])))
+            playing = _weights(lineups.get((g.game_id, team), ()))
+            out[f"strength_{side}"].append(top_sum(((average(pid), w) for pid, w in playing.items()), top))
             n = team_games[team]
             missing = 0.0
             for (t, pid), seen in last_seen.items():
-                if (t == team and pid not in playing and n - seen < RECENT_GAMES
-                        and team_counts[(t, pid)] >= MIN_GAMES):
-                    missing += team_totals[(t, pid)] / team_counts[(t, pid)]
+                if t == team and n - seen < RECENT_GAMES and team_counts[(t, pid)] >= MIN_GAMES:
+                    missing += (1 - playing.get(pid, 0.0)) * team_totals[(t, pid)] / team_counts[(t, pid)]
             out[f"missing_{side}"].append(missing)
         for team in (g.home, g.away):
             team_games[team] += 1
-            for pid in lineups.get((g.game_id, team), set()):
+            for pid in played.get((g.game_id, team), set()):
                 value = prod.get((g.game_id, pid), 0.0)
                 team_totals[(team, pid)] += value
                 team_counts[(team, pid)] += 1
@@ -133,7 +189,29 @@ def add_availability(games: pd.DataFrame, appearances: pd.DataFrame, top: int = 
     return games
 
 
-def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: pd.DataFrame) -> pd.DataFrame:
+def _weights(lineup) -> dict:
+    """``{player_id: chance he plays}`` from a lineup given as ids (each certain to play) or as that dict."""
+    return dict(lineup) if isinstance(lineup, dict) else dict.fromkeys(lineup, 1.0)
+
+
+def top_sum(values: Iterable[tuple[float, float]], top: int) -> float:
+    """Sum of the ``top`` largest values, each counted by its weight (the chance its player plays).
+
+    With weights of 1 it is the plain sum of the ``top`` largest values; a
+    player with half a chance to play fills half a place.
+    """
+    total, room = 0.0, float(top)
+    for value, weight in sorted(values, reverse=True):
+        if room <= 0:
+            break
+        take = min(weight, room)
+        total += value * take
+        room -= take
+    return float(total)
+
+
+def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: pd.DataFrame,
+               lineups: dict | None = None) -> pd.DataFrame:
     """Add ``rapm_home``, ``rapm_away`` and ``rapm_diff``: the impact of who plays.
 
     ``seconds`` is time on the court per player and game (see
@@ -145,11 +223,13 @@ def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: pd.DataFrame
     the expected margin per 100 possessions of its lineups against average
     players. Expected minutes are each player's average so far this season
     (last season's until he has 3 games). Games without ratings get 0.
+    ``lineups`` (from :func:`expected_lineups`, keyed by team) says who is
+    expected to play; by default, the players who were on the court.
     """
     from ..impact.rapm import NEWCOMER
 
     games = games.sort_values(["date", "game_id"]).reset_index(drop=True)
-    lineups = {key: dict(zip(g["player_id"], g["seconds"])) for key, g in seconds.groupby(["game_id", "side"])}
+    played = {key: dict(zip(g["player_id"], g["seconds"])) for key, g in seconds.groupby(["game_id", "side"])}
     ratings = ratings.assign(as_of=pd.to_datetime(ratings["as_of"]))
     schedule: dict[int, tuple[np.ndarray, list[dict]]] = {}
     for season, block in ratings.groupby("season"):
@@ -175,15 +255,19 @@ def add_impact(games: pd.DataFrame, seconds: pd.DataFrame, ratings: pd.DataFrame
             i = int(np.searchsorted(stamps, np.datetime64(g.date, "ns"), side="right")) - 1
             rating = maps[i] if i >= 0 else None
         for side in ("home", "away"):
-            players = lineups.get((g.game_id, side), {})
+            if lineups is None:
+                players = dict.fromkeys(played.get((g.game_id, side), {}), 1.0)
+            else:
+                players = _weights(lineups.get((g.game_id, getattr(g, side)), ()))
             if rating is None or not players:
                 out[f"rapm_{side}"].append(0.0)
                 continue
-            expected = {pid: total[pid] / count[pid] if count[pid] >= MIN_GAMES else previous.get(pid, DEFAULT_SECONDS)
-                        for pid in players}
+            expected = {pid: w * (total[pid] / count[pid] if count[pid] >= MIN_GAMES
+                                  else previous.get(pid, DEFAULT_SECONDS))
+                        for pid, w in players.items() if w > 0}
             out[f"rapm_{side}"].append(lineup_rapm(expected, rating, NEWCOMER))
         for side in ("home", "away"):
-            for pid, sec in lineups.get((g.game_id, side), {}).items():
+            for pid, sec in played.get((g.game_id, side), {}).items():
                 total[pid] += sec
                 count[pid] += 1
     games = games.assign(**out)
@@ -200,28 +284,37 @@ def lineup_rapm(expected_seconds: dict, rating: dict, default: float) -> float:
 
 
 def expected_lineup(appearances: pd.DataFrame, games: pd.DataFrame, team: str, out: Iterable[str] = (),
-                    top: int = 10) -> tuple[float, pd.DataFrame]:
-    """Strength of ``team``'s regulars after the last game loaded, minus players listed in ``out``.
+                    top: int = 10, rule: str = "previous") -> tuple[float, pd.DataFrame]:
+    """Strength of the players ``team`` is expected to field after the last game loaded, minus those in ``out``.
 
-    Regulars are players whose most recent game was for ``team``, with 3+ games
-    that season and an appearance in its last 10 games. Returns the strength
-    and all the regulars, best first (the strength counts the first ``top``).
+    With the ``previous`` rule (as in the backtest), they are the players of
+    its latest game. With ``regulars``, players whose most recent game was for
+    ``team``, with 3+ games that season and an appearance in its last 10 games
+    (better for the first game of a new season: the last game of a season is
+    often played without the stars). Returns the strength and the players,
+    best first (the strength counts the first ``top``).
     """
     from ..twins.similarity import _normalize
 
+    if rule not in ("previous", "regulars"):
+        raise ValueError(f"Unknown lineup rule {rule!r}")
     season = int(games["season"].max())
     apps = appearances[appearances["season"] == season]
     order = {gid: i for i, gid in enumerate(games.sort_values(["date", "game_id"])["game_id"])}
     apps = apps.assign(order=apps["game_id"].map(order)).dropna(subset=["order"])
     last_team = apps.sort_values("order").groupby("player_id")["team"].last()
     team_game_ids = apps.loc[apps["team"] == team, "order"].drop_duplicates().sort_values()
-    recent = set(team_game_ids.tail(RECENT_GAMES))
     stats = apps.groupby("player_id").agg(player=("player", "last"), games=("game_id", "nunique"),
                                           production=("production", "mean"))
-    seen_recent = set(apps.loc[(apps["team"] == team) & apps["order"].isin(recent), "player_id"])
-    regulars = stats[(last_team.reindex(stats.index) == team) & (stats["games"] >= MIN_GAMES)
-                     & stats.index.isin(seen_recent)]
+    if rule == "previous":
+        latest = set(team_game_ids.tail(1))
+        players = stats[stats.index.isin(apps.loc[(apps["team"] == team) & apps["order"].isin(latest), "player_id"])]
+    else:
+        recent = set(team_game_ids.tail(RECENT_GAMES))
+        seen_recent = set(apps.loc[(apps["team"] == team) & apps["order"].isin(recent), "player_id"])
+        players = stats[(last_team.reindex(stats.index) == team) & (stats["games"] >= MIN_GAMES)
+                        & stats.index.isin(seen_recent)]
     skip = {_normalize(n) for n in out}
-    regulars = regulars[~regulars["player"].map(_normalize).isin(skip)]
-    regulars = regulars.sort_values("production", ascending=False)
-    return float(regulars["production"].head(top).sum()), regulars.reset_index()
+    players = players[~players["player"].map(_normalize).isin(skip)]
+    players = players.sort_values("production", ascending=False)
+    return float(players["production"].head(top).sum()), players.reset_index()

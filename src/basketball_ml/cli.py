@@ -9,6 +9,7 @@ from .impact import cli as impact_cli
 from .predictions import cli as predictions_cli
 from .projections import cli as projections_cli
 from .shots import cli as shots_cli
+from .tracking import cli as tracking_cli
 from .twins import cli as twins_cli
 from .winprob import cli as winprob_cli
 
@@ -23,6 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     impact_cli.add_parser(subparsers)
     shots_cli.add_parser(subparsers)
     winprob_cli.add_parser(subparsers)
+    tracking_cli.add_parser(subparsers)
     args = parser.parse_args(argv)
     args.func(args)
 

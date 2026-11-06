@@ -295,6 +295,15 @@ def run_tonight(args: argparse.Namespace) -> None:
         print(f"{_label(season)} so far, {len(so_far)} games, each predicted from the games before it "
               f"(with each team's players from its previous game): model {_scores(y, p)}; "
               f"Elo alone {_scores(y, so_far['elo_prob'].to_numpy())}.\n")
+        try:
+            closing = live.closing_odds(schedule, live.odds_snapshots(args.live_dir))
+        except (urllib.error.URLError, OSError, ValueError, KeyError):
+            closing = pd.DataFrame(columns=["p_market"])
+        seen = so_far["game_id"].isin(closing.index).to_numpy()
+        if seen.any():
+            market = closing.loc[so_far.loc[seen, "game_id"], "p_market"].to_numpy()
+            print(f"The {seen.sum()} of them with archived odds, against the sportsbooks' last odds before tip-off: "
+                  f"model {_scores(y[seen], p[seen])}; sportsbooks {_scores(y[seen], market)}.\n")
     upcoming = schedule[schedule["status"] != live.FINAL]
     if upcoming.empty:
         raise SystemExit("No games left to play this season.")

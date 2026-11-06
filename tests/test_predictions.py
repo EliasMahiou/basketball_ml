@@ -274,3 +274,36 @@ def test_expected_seconds_switch_to_this_season_after_three_games():
     assert out[1] == 1800        # three games this season
     assert out[2] == 900         # one game this season: last season's average
     assert out[3] == 60          # no history: this season's only game
+
+
+def _odds_feed(games):
+    """An odds feed snapshot: ``games`` maps a game id to (home decimal odds, away decimal odds, home spread)."""
+    def book(i, home, away, spread):
+        return {"id": f"sr:book:{i}", "name": f"Book {i}", "outcomes": [
+            {"type": "home", "odds": str(home), "spread": spread}, {"type": "away", "odds": str(away)}]}
+
+    return {"games": [{"gameId": f"{gid:010d}", "markets": [
+        {"name": "2way", "books": [book(1, h, a, None), book(2, h, a, None), book(1, h, a, None)]},
+        {"name": "spread", "books": [book(1, 1.9, 1.9, str(s)), book(2, 1.9, 1.9, str(s + 1))]}]}
+        for gid, (h, a, s) in games.items()]}
+
+
+def test_odds_table_and_closing_odds_take_the_last_odds_before_tip_off():
+    from basketball_ml.predictions import live
+
+    table = live.odds_table(_odds_feed({22600001: (1.5, 3.0, -6.5)}))
+    row = table.loc[22600001]
+    assert abs(row["p_market"] - (1 / 1.5) / (1 / 1.5 + 1 / 3.0)) < 1e-9
+    assert row["spread"] == -6.0 and row["books"] == 2
+    games = pd.DataFrame({"game_id": [22600001, 22600002],
+                          "tip": pd.to_datetime(["2026-11-06T00:00Z", "2026-11-07T00:00Z"], utc=True)})
+    snaps = [(pd.Timestamp("2026-11-05T15:00Z"), _odds_feed({22600001: (2.0, 2.0, 0.0)})),
+             (pd.Timestamp("2026-11-05T23:00Z"), _odds_feed({22600001: (1.5, 3.0, -6.5)})),
+             (pd.Timestamp("2026-11-06T01:00Z"), _odds_feed({22600001: (1.1, 9.0, -15.0),
+                                                              22600002: (1.8, 2.1, -2.0)}))]
+    closing = live.closing_odds(games, snaps)
+    # The snapshot after the first game's tip is ignored; the second game's is 23 hours early.
+    assert list(closing.index) == [22600001]
+    assert closing.loc[22600001, "spread"] == -6.0 and closing.loc[22600001, "minutes"] == 60
+    assert list(live.closing_odds(games, snaps, within=pd.Timedelta(days=2)).index) == [22600001, 22600002]
+    assert live.closing_odds(games, []).empty

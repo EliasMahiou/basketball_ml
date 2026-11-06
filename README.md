@@ -36,7 +36,7 @@ Other public sources, also downloaded on first use:
 - **Draft picks, birth dates and player ids**: [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets) and the NBA.com to Basketball-Reference id table of [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data), into `data/bref/` (impact forecast).
 - **Hoop Impact Bench**: games and minutes of [lumahoops/hoop-impact-bench](https://github.com/lumahoops/hoop-impact-bench) (CC BY 4.0), into `data/bench/`.
 - **Closing betting lines**: [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), into `data/odds/` (market benchmark).
-- **The season in progress**: the NBA's live feed (schedule, box scores, play-by-play and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`.
+- **The season in progress**: the NBA's live feed (schedule, box scores, play-by-play and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`; the odds are also archived on this repository's `odds-archive` branch.
 - **Tracking shot logs of 2014-15**: published by the NBA's stats site and mirrored in public GitHub repositories such as [SergioLlana/nba-shot-analysis](https://github.com/SergioLlana/nba-shot-analysis), into `data/tracking/` (player tracking).
 - **Raw tracking of 2015-16**: the SportVU positions of [linouk23/NBA-Player-Movements](https://github.com/linouk23/NBA-Player-Movements), read one game at a time; only the shot features are kept, in `data/tracking/sportvu/` (player tracking).
 
@@ -221,6 +221,8 @@ The market is better in all 9 seasons, by 0.0149 in log loss (paired standard er
 ### The season in progress
 
 The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score and play-by-play, and today's odds from several sportsbooks). The play-by-play is in the cdn.nba.com format, converted like 2025-26's. `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and refit the player ratings from the season's own stints, as in the backtest: every 30 days for past games, and through the last game played for upcoming ones. Files of finished games are cached in `data/live/`.
+
+The odds feed only shows today's and the next few games, so a scheduled workflow (`.github/workflows/odds.yml`) saves it seven times a day, from 15:00 to 02:00 UTC, on the [`odds-archive`](https://github.com/EliasMahiou/basketball_ml/tree/odds-archive) branch. `tonight` then scores this season's games against the sportsbooks' last moneylines before each tip-off (within 12 hours), once the archive has some; it started on November 6, 2026.
 
 Through November 4, 2026, the 121 games of 2026-27 predicted that way (from the games before each one, each team with the players of its previous game) went 66.9% right with a log loss of 0.610; Elo alone was 60.3% right (log loss 0.632). That's too few games to be sure of either number: the 95% intervals, from resampling the games, are 58.7% to 75.2% for the accuracy and 0.540 to 0.680 for the log loss, and the model's edge over Elo (0.023) goes from -0.050 to +0.007. For November 6, 2026, before two of the games had odds:
 

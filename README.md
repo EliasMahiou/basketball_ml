@@ -8,7 +8,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`projections`](#career-projections) | Ready | Projects a player's next seasons from what his twins did at the same age |
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays, benchmarked against closing betting lines, and live for the season in progress |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
-| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
+| [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast tied for first among public metrics on established players |
 | [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team, live for the season in progress |
 | [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player, live for the season in progress |
 | [`tracking`](#player-tracking) | Ready | What the arena cameras add: how open each shot was (from the 2014-15 shot logs and the raw 2015-16 positions), its effect on expected FG% and shot making, and the defenders who make shooters miss |
@@ -366,17 +366,21 @@ Each step helps in most seasons: the offense/defense prior in 10 of 11, the luck
 | Metric | Established players | Full forecast |
 | --- | --- | --- |
 | **basketball_ml forecast** | **.182** | .188 |
-| LOKI | .170 | **.196** |
+| GRBNU | **.182** | **.205** |
+| xPM (VORP.app) | .177 | .193 |
+| Danny Harlan's EPM projection | .172 | .179 |
 | Pulse | .171 | .177 |
+| LOKI | .170 | .196 |
 | OpenRAPM | .162 | .171 |
 | xRAPM | .161 | .169 |
 | LEBRON | .159 | .154 |
 | EPM | .157 | .178 |
 | DARKO | .155 | .159 |
 | BPM (Basketball-Reference) | .154 | .154 |
-| Last season's plain RAPM | .141 | .133 |
+| ARC, 2-year | .152 | .156 |
+| Last season's plain RAPM | .142 | .132 |
 
-Other metrics' numbers are the benchmark's published v1.1.0 results. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise, so on established players the forecast is ahead of every published metric; with rookies counted, LOKI's newcomer values are better than ours.
+Other metrics' numbers are the benchmark's published v1.2.0 results (November 1, 2026), which added GRBNU, xPM and Danny Harlan's EPM projection. Ours come from `impact-bench`, a re-implementation of its game-margin test on its own game and minutes files, which gives exactly its published numbers for the metrics it ships (LOKI, OpenRAPM, ARC). The benchmark calls gaps under about .006 noise, so on established players the forecast is tied for first with GRBNU (.1821 against .1820). With rookies counted it is fourth: the gap is the players it can't rate yet, since putting LOKI's values in for those newcomers alone takes it to .194. Draft slot and age already set those values; height, weight and having played in a US college add nothing.
 
 ## Shot quality (expected FG%)
 
@@ -694,6 +698,6 @@ pytest
 
 - **Better projections**: regress toward the mean, add minutes and availability, and adjust for league-wide trends.
 - **Lineup embeddings** learned from who is on the court, as in [NBA2Vec](https://arxiv.org/abs/2302.13386).
-- **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
+- **Better rookie values** for the impact forecast (college or international stats), where GRBNU, LOKI and xPM are ahead; height and weight add nothing.
 - **Injury reports** for the live predictions: the official PDFs and the sports sites that repeat them are blocked from the environment this is built in, so absences still come from `--out`.
 - **Tracking for every season**: stats.nba.com's shooting splits by closest defender, drives, catch-and-shoot and rim protection (since 2013-14) through `nba_api`, from a connection that can reach it.

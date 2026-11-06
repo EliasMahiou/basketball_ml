@@ -3,8 +3,10 @@ import pandas as pd
 from threadpoolctl import threadpool_limits
 
 from basketball_ml.shots import (ShotModel, ZoneRate, arena_bias, calibration, consecutive, court_map,
-                                 efficiency_shares, normalize_action, player_seasons, predict_next, prepare_shots,
-                                 recenter, score_before, shot_kind, team_quality, walk_forward, year_to_year)
+                                 efficiency_shares, fill_zones, normalize_action, player_seasons, predict_next,
+                                 prepare_shots, recenter, score_before, shot_kind, team_quality, walk_forward,
+                                 year_to_year)
+from basketball_ml.shots.making import ARENA_PRIOR_GAMES, CARRY_MIN_SHOTS
 
 
 TEAMS = {100: "AAA", 200: "BBB", 300: "CCC"}
@@ -91,6 +93,21 @@ class _Spy:
         return np.full(len(shots), 0.5)
 
 
+def test_fill_zones_takes_the_zones_of_the_same_or_nearest_spot():
+    reference = prepare_shots(_raw_shots(n=3000))
+    shots = prepare_shots(_raw_shots(n=200, seed=1))
+    blank = shots.assign(zone_basic=None, zone_area=None, zone_range=None)
+    # A spot no reference shot came from: just off one that did.
+    spot = reference[reference["is_three"] == 0].iloc[0]
+    blank.loc[0, ["loc_x", "loc_y", "is_three"]] = [spot["loc_x"] + 1, spot["loc_y"], 0]
+    filled = fill_zones(blank, reference)
+    assert filled.loc[0, "zone_basic"] == spot["zone_basic"] and filled.loc[0, "zone_range"] == spot["zone_range"]
+    # In the synthetic shots, zones follow from distance and value, as on a real court.
+    rest = filled.iloc[1:]
+    assert (rest["zone_basic"].to_numpy() == shots["zone_basic"].iloc[1:].to_numpy()).mean() > 0.95
+    assert fill_zones(shots, reference) is shots
+
+
 def test_walk_forward_trains_on_the_three_seasons_before():
     shots = pd.concat([prepare_shots(_raw_shots(n=300, season=s, seed=s)) for s in range(2001, 2007)])
     out = walk_forward(shots, range(2001, 2007), models={"spy": _Spy})
@@ -159,6 +176,47 @@ def test_arena_bias_finds_and_removes_a_scorekeeper_effect():
     fixed = (shots["made"] - recenter(shots))[biased].mean()
     unfixed = (shots["made"] - recenter(shots, arenas=False))[biased].mean()
     assert unfixed > 0.05 and abs(fixed) < 0.5 * unfixed
+
+
+def test_a_season_in_progress_leans_on_last_seasons_arena_bias():
+    shots = _predictions({i: 0.0 for i in range(1, 10)}, seasons=(2001, 2002), n=9000)
+    arena = pd.Series(np.where(shots["home"] == 1, shots["team"], shots["opponent"]), index=shots.index)
+    two = shots["value"] == 2
+    # AAA's scorekeeper was off last season only.
+    shots.loc[(arena == "AAA") & two & (shots["season"] == 2001), "xfg"] -= 0.10
+    p = recenter(shots, arenas=False)
+    own, blended = arena_bias(shots, p), arena_bias(shots, p, in_progress={2002})
+    last_season = shots["season"] == 2001
+    assert np.allclose(own[last_season], blended[last_season])
+    by_arena = {name: b[two].groupby([shots["season"][two], arena[two]]).mean() for name, b in
+                (("own", own), ("blended", blended))}
+    games = shots.loc[~last_season, "game_id"].nunique()
+    weight = games / (games + ARENA_PRIOR_GAMES)
+    expected = weight * by_arena["own"].loc[2002] + (1 - weight) * by_arena["own"].loc[2001]
+    assert np.allclose(by_arena["blended"].loc[2002], expected - expected.mean())
+    assert by_arena["blended"].loc[(2002, "AAA")] > 0.06 > abs(by_arena["own"].loc[(2002, "AAA")])
+
+
+def test_shot_making_of_a_season_in_progress_starts_from_last_season():
+    skill = {i: 0.0 for i in range(1, 10)} | {1: 0.12, 5: -0.12}
+    past = _predictions(skill, seasons=(2001, 2002, 2003))
+    # Player 9 sits out 2003, so he has no last season to start from.
+    past = past[(past["player_id"] != 9) | (past["season"] != 2003)]
+    shots = pd.concat([past, _predictions(skill, seasons=(2004,), n=900)], ignore_index=True)
+    table = player_seasons(shots, prior_min_shots=100, in_progress={2004})
+    assert 0.5 < table.attrs["rho"] < 1.5 and 0 < table.attrs["s"] < table.attrs["tau"]
+    now = table[table["season"] == 2004].set_index("player_id")
+    before = table[table["season"] == 2003].set_index("player_id")["per_100_shrunk"]
+    for player in (1, 5):
+        # Between what last season predicts and this season's own making, much closer to the former.
+        start, own = table.attrs["rho"] * before[player], now.loc[player, "per_100"]
+        assert min(start, own) <= now.loc[player, "per_100_skill"] <= max(start, own)
+        assert abs(now.loc[player, "per_100_skill"] - start) < abs(now.loc[player, "per_100_skill"] - own)
+    assert now.loc[1, "per_100_skill"] > 10 > -10 > now.loc[5, "per_100_skill"]
+    assert now.loc[9, "per_100_skill"] == now.loc[9, "per_100_shrunk"]
+    assert (table.loc[table["season"] == 2001, "per_100_skill"] == table.loc[table["season"] == 2001,
+                                                                             "per_100_shrunk"]).all()
+    assert CARRY_MIN_SHOTS <= 200
 
 
 def test_team_quality_splits_points_per_shot_into_quality_and_making():

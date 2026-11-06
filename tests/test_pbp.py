@@ -63,3 +63,36 @@ def test_from_cdn_accepts_live_files_missing_unused_fields():
     events = pbp.from_cdn(rows)
     assert events["EVENTMSGTYPE"].tolist() == [12, 1, 2, 4, 5, 8, 1, 5, 13]
     assert events.iloc[2]["PLAYER3_ID"] == 0 and events.iloc[4]["PLAYER2_ID"] == 0
+
+
+def test_shots_from_cdn_builds_shot_chart_rows():
+    from basketball_ml.shots import prepare_shots
+
+    rows = _cdn_rows()
+    shot = rows["actionType"].isin(["2pt", "3pt"])
+    rows.loc[shot, "xLegacy"] = [0, -230, 150]
+    rows.loc[shot, "yLegacy"] = [5, 60, 200]
+    rows.loc[shot, "shotDistance"] = [0.5, 23.8, 25.0]
+    rows.loc[shot, "area"] = ["Restricted Area", "Left Corner 3", "Above the Break 3"]
+    rows.loc[shot, "areaDetail"] = ["0-8 Center", "24+ Left", "24+ Right Center"]
+    rows.loc[shot, "descriptor"] = ["driving", None, "step back"]
+    games = pd.DataFrame({"game_id": [1], "date": [pd.Timestamp("2026-10-21")], "home": ["HOM"], "away": ["AWY"]})
+    shots = pbp.shots_from_cdn(rows, games, names=pd.Series({1: "Al One"}))
+    assert shots["GAME_EVENT_ID"].tolist() == [2, 3, 10]
+    assert shots["ACTION_TYPE"].tolist() == ["Driving Layup Shot", "Jump Shot", "Step Back Jump shot"]
+    assert shots["SHOT_MADE_FLAG"].tolist() == [1, 0, 1]
+    assert shots["EVENT_TYPE"].tolist() == ["Made Shot", "Missed Shot", "Made Shot"]
+    assert shots["SHOT_TYPE"].tolist() == ["2PT Field Goal", "3PT Field Goal", "3PT Field Goal"]
+    assert shots["SHOT_ZONE_AREA"].tolist() == ["Center(C)", "Left Side(L)", "Right Side Center(RC)"]
+    assert shots["SHOT_ZONE_RANGE"].tolist() == ["Less Than 8 ft.", "24+ ft.", "24+ ft."]
+    assert shots["PLAYER_NAME"].tolist() == ["Al One", "K. Eleven", "K. Eleven"]
+    assert shots[["LOC_X", "LOC_Y"]].to_numpy().tolist() == [[0, 5], [-230, 60], [150, 200]]
+    assert shots.loc[2, ["MINUTES_REMAINING", "SECONDS_REMAINING"]].tolist() == [10, 40]
+    assert (shots["GAME_DATE"] == 20261021).all() and (shots["HTM"] == "HOM").all() and (shots["VTM"] == "AWY").all()
+    # A game missing from the schedule is left out.
+    assert pbp.shots_from_cdn(rows, games.assign(game_id=2)).empty
+
+    ready = prepare_shots(shots.assign(season=2027))
+    assert ready["team"].tolist() == ["HOM", "AWY", "AWY"] and ready["home"].tolist() == [1, 0, 0]
+    assert ready["action"].tolist() == ["driving layup shot", "jump shot", "step back jump shot"]
+    assert ready["kind"].tolist() == ["layup", "jump", "jump"] and ready["is_three"].tolist() == [0, 1, 1]

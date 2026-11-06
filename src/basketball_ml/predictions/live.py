@@ -11,9 +11,9 @@ sites read, on a public S3 bucket:
 - today's odds from several sportsbooks.
 
 :func:`season_games`, :func:`season_appearances` and :func:`season_events`
-turn them into the tables the game model and the player ratings are built
-on, so predictions can follow the season. Files of finished games are cached
-in ``data/live/``.
+turn them into the tables the game model, the player ratings and the shot
+models are built on, so they can follow the season. Files of finished games
+are cached in ``data/live/``.
 """
 
 from __future__ import annotations
@@ -96,12 +96,20 @@ def playbyplay(game_id: int, cache_dir: str | Path = "data/live", final: bool = 
     return pd.DataFrame(data["game"]["actions"]).assign(gameId=int(data["game"]["gameId"]))
 
 
+def season_actions(games: pd.DataFrame, cache_dir: str | Path = "data/live") -> pd.DataFrame:
+    """The play-by-play actions of every finished game of ``games``, in the feed's own columns."""
+    parts = [playbyplay(g.game_id, cache_dir) for g in games[games["status"] == FINAL].itertuples(index=False)]
+    parts = [p for p in parts if p is not None]
+    if not parts:
+        raise SystemExit("No finished game of the season has play-by-play yet")
+    return pd.concat(parts, ignore_index=True)
+
+
 def season_events(games: pd.DataFrame, cache_dir: str | Path = "data/live") -> pd.DataFrame:
     """Play-by-play of every finished game of ``games``, in the stats.nba.com columns (see :func:`pbp.from_cdn`)."""
     from .. import pbp
 
-    parts = [playbyplay(g.game_id, cache_dir) for g in games[games["status"] == FINAL].itertuples(index=False)]
-    events = pbp.from_cdn(pd.concat([p for p in parts if p is not None], ignore_index=True))
+    events = pbp.from_cdn(season_actions(games, cache_dir))
     events["season"] = int(games["season"].iloc[0])
     return events
 

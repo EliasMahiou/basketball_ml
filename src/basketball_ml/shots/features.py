@@ -102,12 +102,18 @@ def build_margins(seasons: Iterable[int], data_dir: str | Path = "data/pbp") -> 
 def prepare_shots(raw: pd.DataFrame, margins: pd.DataFrame | None = None) -> pd.DataFrame:
     """Model-ready shots from shot chart rows (with a ``season`` column).
 
+    The shooter's team is ``TEAM_ABBREVIATION`` when there is one, otherwise
+    the abbreviation his team has in its games (see :func:`team_abbreviations`).
+
     ``margins`` (from :func:`build_margins`) adds the shooting team's lead before
     the shot; without it, or for shots missing from the play-by-play, the
     margin is left empty.
     """
-    teams = raw[["season", "TEAM_ID"]].merge(team_abbreviations(raw), on=["season", "TEAM_ID"], how="left")["team"]
-    team = teams.to_numpy()
+    if "TEAM_ABBREVIATION" in raw:
+        team = raw["TEAM_ABBREVIATION"].to_numpy()
+    else:
+        team = raw[["season", "TEAM_ID"]].merge(team_abbreviations(raw), on=["season", "TEAM_ID"],
+                                                how="left")["team"].to_numpy()
     home = team == raw["HTM"].to_numpy()
     x = raw["LOC_X"].to_numpy(np.float32)
     y = raw["LOC_Y"].to_numpy(np.float32)
@@ -145,6 +151,42 @@ def prepare_shots(raw: pd.DataFrame, margins: pd.DataFrame | None = None) -> pd.
         lookup = margins.set_index(["GAME_ID", "GAME_EVENT_ID"])["home_margin"]
         home_margin = lookup.reindex(key).to_numpy(np.float32)
         out["margin"] = np.where(home, home_margin, -home_margin).astype(np.float32)
+    return out
+
+
+def fill_zones(shots: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
+    """``shots`` with missing zones filled in from where they were taken, as ``reference`` shots have them.
+
+    The live feed leaves out the shot chart's three zone fields. They are
+    fixed areas of the court, so each spot (``loc_x``, ``loc_y``, 2 or 3)
+    takes the zones most reference shots from that spot have, and a spot no
+    reference shot came from takes those of the nearest one that did. From
+    the 2023-24 and 2024-25 shot charts, 99.9% of 2025-26 shots get all three
+    zones right this way.
+    """
+    missing = shots[ZONES].isna().any(axis=1).to_numpy()
+    if not missing.any():
+        return shots
+    key = ["loc_x", "loc_y", "is_three"]
+    ref = reference[[*key, *ZONES]].astype({z: str for z in ZONES})
+    spots = (ref.groupby([*key, *ZONES]).size().reset_index(name="n")
+             .sort_values("n", ascending=False, kind="stable").drop_duplicates(key).reset_index(drop=True))
+    zones = spots.set_index(key)[ZONES].reindex(pd.MultiIndex.from_frame(shots.loc[missing, key])).to_numpy()
+    unseen = pd.isna(zones[:, 0])
+    if unseen.any():
+        from sklearn.neighbors import KDTree
+
+        where = shots.loc[missing, key].to_numpy(float)
+        for three in (0, 1):
+            todo = unseen & (where[:, 2] == three)
+            pool = spots[spots["is_three"] == three]
+            if todo.any() and len(pool):
+                nearest = KDTree(pool[["loc_x", "loc_y"]].to_numpy(float)).query(where[todo, :2], k=1)[1][:, 0]
+                zones[todo] = pool[ZONES].to_numpy()[nearest]
+    out = shots.copy()
+    for i, z in enumerate(ZONES):
+        out[z] = out[z].astype(object)
+        out.loc[missing, z] = zones[:, i]
     return out
 
 

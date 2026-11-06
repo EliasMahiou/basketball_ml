@@ -9,7 +9,7 @@ Machine learning on NBA data. Each project lives in its own module of the `baske
 | [`predictions`](#game-predictions) | Ready | Home win probability for any matchup, from Elo, recent form, rest and who plays, benchmarked against closing betting lines, and live for the season in progress |
 | [`embeddings`](#play-by-play-style) | Ready | Style fingerprints from play-by-play: style twins, archetypes and a style map |
 | [`impact`](#player-impact-rapm) | Ready | How many points each player adds per 100 possessions (RAPM), and a next-season forecast that beats public metrics on a public benchmark |
-| [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team |
+| [`shots`](#shot-quality-expected-fg) | Ready | Expected FG% of every shot, shot making by player, and shot quality by team, live for the season in progress |
 | [`winprob`](#live-win-probability) | Ready | Win probability after every play, the biggest comebacks, and win probability added by player, live for the season in progress |
 | [`tracking`](#player-tracking) | Ready | What the arena cameras add: how open each shot was (from the 2014-15 shot logs and the raw 2015-16 positions), its effect on expected FG% and shot making, and the defenders who make shooters miss |
 
@@ -36,7 +36,7 @@ Other public sources, also downloaded on first use:
 - **Draft picks, birth dates and player ids**: [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets) and the NBA.com to Basketball-Reference id table of [gabriel1200/site_Data](https://github.com/gabriel1200/site_Data), into `data/bref/` (impact forecast).
 - **Hoop Impact Bench**: games and minutes of [lumahoops/hoop-impact-bench](https://github.com/lumahoops/hoop-impact-bench) (CC BY 4.0), into `data/bench/`.
 - **Closing betting lines**: [kyleskom/NBA-Machine-Learning-Sports-Betting](https://github.com/kyleskom/NBA-Machine-Learning-Sports-Betting), into `data/odds/` (market benchmark).
-- **The season in progress**: the NBA's live feed (schedule, box scores and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`.
+- **The season in progress**: the NBA's live feed (schedule, box scores, play-by-play and today's odds, on the public bucket `nba-prod-us-east-1-mediaops-stats`), into `data/live/`.
 - **Tracking shot logs of 2014-15**: published by the NBA's stats site and mirrored in public GitHub repositories such as [SergioLlana/nba-shot-analysis](https://github.com/SergioLlana/nba-shot-analysis), into `data/tracking/` (player tracking).
 - **Raw tracking of 2015-16**: the SportVU positions of [linouk23/NBA-Player-Movements](https://github.com/linouk23/NBA-Player-Movements), read one game at a time; only the shot features are kept, in `data/tracking/sportvu/` (player tracking).
 
@@ -384,6 +384,7 @@ Two players can both shoot 47%, one on layups and the other on step-back threes.
     - xFG is first set to each season's league level, separately for twos and threes, because 2-point accuracy has risen almost every season.
     - Twos are also corrected for each arena's scorekeeper bias. Some arenas log shots farther from the rim than they were, so twos there go in more often for both teams. The bias, estimated from home-minus-road gaps, ranges from -7 to +6 FG% points in 2025-26; Utah, Golden State and Sacramento are highest.
     - Each player's rate is shrunk toward 0 by the noise of his sample (empirical Bayes). Half of the observed spread is skill at about 270 attempts.
+    - In the season in progress, the arena biases and each player's shot making start from last season's (see The season in progress, below).
 6. **Teams**: shot quality is the average expected points per shot (xPPS) of a team's attempts, and, on defense, of its opponents' attempts.
 
 ### Usage
@@ -394,6 +395,8 @@ basketball-ml shot-making                                # best shot makers of 2
 basketball-ml shot-making "Stephen Curry"                # one player, season by season
 basketball-ml shot-making --persistence                  # is shot making a skill?
 basketball-ml shot-quality --season 2026                 # teams, offense and defense
+basketball-ml shot-making --live                         # 2026-27 so far, from the NBA's live feed
+basketball-ml shot-quality --live                        # teams in 2026-27 so far
 ```
 
 The first run takes about 10 minutes. It caches the out-of-sample predictions for all 2.3 million shots in `data/pbp/xfg_predictions_2013_2026.csv`; after that every command takes a few seconds.
@@ -448,6 +451,32 @@ Shot making holds up from one season to the next as well as eFG% does: it is a s
 - Last season's shot making predicts next season's shot making much better than FG% does (r 0.63 vs 0.28).
 
 How open each shot was isn't in the shot charts. The 2014-15 tracking logs and the raw 2015-16 positions show that it matters for xFG but changes little about who the good shot makers are (see [Player tracking](#player-tracking)). Free throws are left out, so players get no credit for drawing fouls.
+
+### The season in progress
+
+`--live` adds 2026-27 from the NBA's live feed. Its play-by-play has each shot's spot, shooter, result and shot type in the shot charts' terms, but not their three zones, which each shot takes from the same spot in the three seasons before. Each shot's xFG comes from the model trained on 2023-24 to 2025-26. The whole path, run on 2025-26 games, gives the same log loss as the real shot charts (0.6368) and xFG correlated 0.9999 with theirs, and each of the three zones is right for 99.9% of shots.
+
+Two things are different early in a season:
+
+- **Arena bias** can't be measured from a few games: 120 games in, the season's own estimate misses the rest of the season by more (4.3 points) than assuming no bias at all (3.2). But it carries over from one season to the next (r 0.77 from 2015-16 to 2025-26), so after n games the season in progress takes n / (n + 600) of its own estimate and the rest from last season's. Of the weights tried, 600 games predicted the rest of the season best, or within 0.01 points of the best, from 60 to 800 games in.
+- **Shot making** of a few games says little about a player. `skill_per_100` shrinks this season's toward 0.88 times last season's instead of toward 0 (true skill spreads 4.5 points per 100 shots around that, 6.9 around 0), and the season in progress is ranked by it. Fitted on earlier seasons and scored on the rest of each season from 2017-18 to 2025-26, after 121 games it correlates 0.57 with a player's shot making over the rest of the season, against 0.35 for this season's alone, and does better in all nine seasons. It is still ahead after 800 games (0.58 vs 0.53).
+
+2026-27 through November 4 (121 games), players with 30+ attempts:
+
+| | Player | FGA | FG% | xFG% | Points added | Per 100 shots (shrunk) | Skill per 100 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Nikola Jokić | 127 | 50.4% | 46.3% | +6 | +1.7 | +13.6 |
+| 2 | Kevin Durant | 112 | 52.7% | 46.7% | +15 | +4.1 | +12.8 |
+| 3 | Cam Spencer | 51 | 52.9% | 39.4% | +20 | +5.2 | +12.7 |
+| 4 | Luka Dončić | 188 | 49.5% | 39.1% | +50 | +9.8 | +12.5 |
+| 5 | Jamal Murray | 116 | 47.4% | 41.9% | +22 | +5.2 | +12.3 |
+| 6 | Shai Gilgeous-Alexander | 190 | 44.7% | 41.4% | +14 | +3.2 | +11.6 |
+| 7 | Donovan Mitchell | 128 | 48.4% | 40.2% | +26 | +6.2 | +10.2 |
+| 8 | Anthony Edwards | 104 | 48.1% | 41.7% | +16 | +4.2 | +9.7 |
+
+Dončić started the season at +9.1 (0.88 times his +10.4 of 2025-26) and is up to +12.5 after the most points added so far; Gilgeous-Alexander started at +12.8 and is down to +11.6.
+
+Teams settle at different speeds. After 8 games each, a team's shot quality on offense says as much about the rest of its season as last season's does (correlation 0.50 for both, 2016-17 to 2025-26); the shot quality it allows (0.29 vs 0.43) and shot making on either end say less. So far the Lakers score the most per shot (1.20, on shots worth 1.09) and Detroit allows the least (0.97, on shots worth 1.04).
 
 ## Live win probability
 
@@ -589,7 +618,7 @@ On 97,712 shots of 621 games, by 5-fold cross-validation over games:
 ```
 src/basketball_ml/
 ├── data.py          # Basketball-Reference advanced stats loader
-├── pbp.py           # play-by-play and shot chart downloader
+├── pbp.py           # play-by-play and shot chart downloader, cdn.nba.com play-by-play and shots converter
 ├── cache.py         # derived tables cached as CSV
 ├── cli.py           # basketball-ml entry point, one subcommand per module
 ├── twins/
@@ -621,11 +650,11 @@ src/basketball_ml/
 │   ├── bench.py       # the Hoop Impact Bench game-margin test
 │   └── cli.py         # basketball-ml impact / impact-backtest / impact-export / impact-bench
 ├── shots/
-│   ├── features.py    # shot features, label cleaning, score margin from the play-by-play
+│   ├── features.py    # shot features, label cleaning, score margin from the play-by-play, zones from location
 │   ├── model.py       # xFG models, baselines, walk-forward evaluation and calibration
-│   ├── making.py      # league re-centering, arena correction, shrinkage, team tables, persistence
+│   ├── making.py      # league re-centering, arena correction, shrinkage (toward 0 or last season), team tables, persistence
 │   ├── plot.py        # half-court map of expected FG%
-│   └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality
+│   └── cli.py         # basketball-ml xfg-backtest / shot-making / shot-quality, and the season in progress
 ├── winprob/
 │   ├── states.py      # game states from the play-by-play: clock, score, possession inferred from the events
 │   ├── model.py       # Brownian, logistic and boosting models, walk-forward evaluation and calibration
@@ -654,4 +683,3 @@ pytest
 - **Better rookie values** for the impact forecast (college or international stats, height), where LOKI is ahead.
 - **Injury reports** for the live predictions: the official PDFs and the sports sites that repeat them are blocked from the environment this is built in, so absences still come from `--out`.
 - **Tracking for every season**: stats.nba.com's shooting splits by closest defender, drives, catch-and-shoot and rim protection (since 2013-14) through `nba_api`, from a connection that can reach it.
-- **Shot quality for the season in progress**: the live feed's play-by-play has each shot's location, so expected FG% and shot making could follow the season like the ratings and the win probability do.

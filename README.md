@@ -218,6 +218,18 @@ Closing betting lines are the hardest benchmark: they know everything public bef
 
 The market is better in all 9 seasons, by 0.0149 in log loss (paired standard error 0.0019). When the two disagree by more than 10 points, the market is almost always right: in the 1,196 games where the model gave the home team 10+ points more than the line (59% against 43% on average), the home team won 44%; in the 712 where the line was 10+ points higher (65% against 50%), it won 64%. Most of those gaps are what the model can't see: injury news, minutes limits and rest decisions. The model adds nothing to the line: with the line's log-odds as a feature, the log loss is 0.6008, against 0.6007 for the line alone. The small gain reported before (0.0007) came from knowing who played.
 
+Point margins say more per game than a win or a loss, so the spread is a sharper test. The file's spreads are rougher than its moneylines: before 2022-23 their sign often disagrees with the moneyline and some hold the over/under. Each spread takes the sign of the moneyline's favorite and is used only within 3 points of the margin the moneyline implies (12.5 × Φ⁻¹ of its win probability, close to the books' own conversion: 12.6 since 2022-23), which keeps 9,430 of the 10,054 games. Linear models of the home margin, fitted on earlier seasons:
+
+| | RMSE | Squared error per game vs the spread (95%) | Its side covers (95%) |
+| --- | --- | --- | --- |
+| Closing spread | 13.19 | | |
+| Model | 13.37 | +4.67 (+3.18 to +6.29) | 50.8% (49.8% to 51.8%) |
+| Spread and moneyline | 13.17 | -0.58 (-1.16 to +0.01) | 51.5% (50.5% to 52.6%) |
+| Model, spread and moneyline | 13.15 | -1.05 (-1.69 to -0.42) | 52.1% (51.1% to 53.1%) |
+| Player impact, spread and moneyline | 13.16 | -0.99 (-1.63 to -0.36) | 52.2% (51.2% to 53.2%) |
+
+Alone, the model is behind the spread in 8 of 9 seasons, and the side it prefers covers 50.8% of the time, short of the 52.4% a bet at -110 needs. The moneyline alone already does a little better than the spread column, a sign that the file's spreads are less exact than its moneylines (the two differ by a standard deviation of 1.3 to 1.4 points before 2022-23 and 0.5 to 0.7 since), so the fair benchmark is the market as a whole. On top of it, the model's features still cut the squared error by 0.47 points per game (95% 0.12 to 0.83), in 7 of 9 seasons, and nearly all of that is the player-impact rating of the expected lineups: with the market alone it cuts 0.41, in 8 of 9 seasons. These lines don't fully price the player ratings, then, but the gap is small: the side the model prefers covers 52.1%, still under 52.4%. On win probability the same rating's gain on the moneyline, 0.0003 in log loss, is within noise (95% -0.0009 to +0.0002).
+
 ### The season in progress
 
 The play-by-play archives are published after each season, so the season being played comes from the NBA's public live feed: the JSON files of its own sites, on a public S3 bucket (league schedule with scores, each finished game's box score and play-by-play, and today's odds from several sportsbooks). The play-by-play is in the cdn.nba.com format, converted like 2025-26's. `tonight` and `predict --live` bring Elo, form, rest and the lineups up to the last game played, and refit the player ratings from the season's own stints, as in the backtest: every 30 days for past games, and through the last game played for upcoming ones. Files of finished games are cached in `data/live/`.
@@ -635,7 +647,7 @@ src/basketball_ml/
 │   ├── games.py       # game results, Elo and pre-game features
 │   ├── availability.py # who played, who is expected to play, lineup strength and impact
 │   ├── model.py       # win-probability models, walk-forward evaluation and calibration
-│   ├── market.py      # closing betting lines, matched to games, and the market benchmark
+│   ├── market.py      # closing moneylines and spreads, matched to games, and the market benchmarks
 │   ├── live.py        # the season in progress from the NBA's live feed: schedule, box scores, play-by-play, odds
 │   ├── plot.py        # calibration chart
 │   └── cli.py         # basketball-ml predict / tonight / ratings / games-backtest

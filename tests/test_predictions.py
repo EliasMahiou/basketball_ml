@@ -197,6 +197,49 @@ def test_closing_lines_match_games_a_day_apart(tmp_path):
     assert p[1] > 0.6 and p[2] < 0.5 and np.isnan(p[3])
 
 
+def test_spreads_take_the_moneyline_favorites_sign_and_odd_ones_are_dropped(tmp_path):
+    import sqlite3
+
+    from basketball_ml.predictions.market import load_lines, match_lines
+
+    con = sqlite3.connect(tmp_path / "odds.sqlite")
+    rows = [("2021-01-02", "Boston Celtics", "Los Angeles Lakers", 5.5, -220, 180),  # home favored, sign missing
+            ("2021-01-03", "Boston Celtics", "Los Angeles Lakers", 216.5, -220, 180),  # the over/under
+            ("2021-01-04", "Utah Jazz", "LA Clippers", 4.0, 150, -170)]  # away favored
+    pd.DataFrame(rows, columns=["Date", "Home", "Away", "Spread", "ML_Home", "ML_Away"]).to_sql("2020-21", con)
+    con.close()
+    lines = load_lines(tmp_path / "odds.sqlite")
+    assert lines["line_margin"][0] == 5.5 and np.isnan(lines["line_margin"][1]) and lines["line_margin"][2] == -4.0
+    # The same teams on consecutive days: each game keeps its own line, even one without a usable spread.
+    games = pd.DataFrame({"game_id": [1, 2], "home": ["BOS", "BOS"], "away": ["LAL", "LAL"],
+                          "date": pd.to_datetime(["2021-01-02", "2021-01-03"])})
+    spread = match_lines(games, lines, "line_margin")
+    assert spread[1] == 5.5 and np.isnan(spread[2])
+
+
+def test_spread_backtest_scores_margins_against_the_line():
+    from scipy.stats import norm
+
+    from basketball_ml.predictions.market import against_the_spread, spread_backtest
+
+    games, _ = add_features(_fake_games(6))
+    rng = np.random.default_rng(2)
+    # The line knows most of the margin; a feature it misses knows the rest.
+    skill = rng.normal(0, 6, len(games))
+    games["hidden"] = rng.normal(0, 5, len(games))
+    games["line_margin"] = skill
+    games["p_market"] = norm.cdf((skill + rng.normal(0, 1, len(games))) / 12.5)
+    games["margin"] = skill + games["hidden"] + rng.normal(0, 6, len(games))
+    results = spread_backtest(games, [2013, 2014, 2015], features=["hidden"])
+    assert len(results) == (games["season"] >= 2013).sum() and "margin_impact" not in results
+    assert against_the_spread(results, "margin_model")["gap"] > 0  # the feature alone misses what the line knows
+    both = against_the_spread(results, "margin_blend")
+    assert both["gap"] < 0 and both["ats"] > 0.6 and both["gap_interval"][1] < 0
+    assert against_the_spread(results, "margin_blend", baseline="margin_market")["gap"] < 0
+    perfect = against_the_spread(results.assign(margin_model=results["margin"]))
+    assert perfect["rmse"] == 0 and perfect["ats"] == 1
+
+
 def test_market_backtest_blends_model_and_line():
     from basketball_ml.predictions.market import market_backtest
 

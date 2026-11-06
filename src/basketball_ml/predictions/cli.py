@@ -122,11 +122,38 @@ def run_backtest(args: argparse.Namespace) -> None:
     if args.market:
         from .market import add_market, market_backtest
 
-        lined = market_backtest(add_market(games, args.odds_dir), range(args.test_from, args.last_season + 1))
+        games = add_market(games, args.odds_dir)
+        lined = market_backtest(games, range(args.test_from, args.last_season + 1))
         table = evaluate(lined, ("market", "logistic", "blend"))
         table.index = ["closing line", "model", "model + closing line"]
         print(f"\nAgainst the betting market, on the {len(lined)} of these games with a closing moneyline:\n")
         print(table.round(4).to_string())
+        _spreads(games, args)
+
+
+def _spreads(games: pd.DataFrame, args: argparse.Namespace) -> None:
+    from . import market
+
+    spreads = market.spread_backtest(games, range(args.test_from, args.last_season + 1))
+    names = {"line_margin": "closing spread", "margin_model": "model", "margin_market": "spread + moneyline",
+             "margin_blend": "model + spread + moneyline", "margin_impact": "player impact + spread + moneyline"}
+    rows = {}
+    for column, name in names.items():
+        if column in spreads:
+            r = market.against_the_spread(spreads, column)
+            rows[name] = {"RMSE": f"{r['rmse']:.2f}", "vs spread": f"{r['gap']:+.2f}",
+                          "95%": "{:+.2f} to {:+.2f}".format(*r["gap_interval"]),
+                          "covers": f"{r['ats']:.1%}", "95% ": "{:.1%} to {:.1%}".format(*r["ats_interval"])}
+    table = pd.DataFrame(rows).T
+    table.loc["closing spread", ["vs spread", "95%", "covers", "95% "]] = ""
+    print(f"\nPoint margins, on the {len(spreads)} of these games whose closing spread is within "
+          f"{market.SPREAD_TOLERANCE:.0f} points of the moneyline's:\n")
+    print(table.to_string())
+    added = market.against_the_spread(spreads, "margin_blend", baseline="margin_market")
+    print(f"\nvs spread: squared error per game minus the spread's. covers: how often the side each prefers "
+          f"against the spread won ({market.BREAK_EVEN:.1%} breaks even at -110).\nThe model's features on top of "
+          f"spread + moneyline: {added['gap']:+.2f} per game "
+          "(95% {:+.2f} to {:+.2f}).".format(*added["gap_interval"]))
 
 
 def run_ratings(args: argparse.Namespace) -> None:
